@@ -5,6 +5,8 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[2]
 output = ROOT / 'assets/thinking-orbs'
 for folder in sorted((ROOT / 'work/orb-frames').iterdir()):
+    if folder.name.endswith('-composing'):
+        continue
     images = [Image.open(p).convert('RGBA') for p in sorted(folder.glob('*.png'))]
     target = output / (folder.name + '.webp')
     images[0].save(target, save_all=True, append_images=images[1:], duration=42,

@@ -199,17 +199,29 @@ def test_committed_assistant_answer_is_spoken_and_saved_through_existing_service
 
 def test_voice_states_switch_client_played_orb_without_animation_polling(peter_ui, monkeypatch):
     app, orb = peter_ui, peter_ui.home_view.orb
-    image = orb.image
+    image = orb.orb_image
     from app.views.peter import ORB_STATES
     for state in ("listening", "thinking", "speaking", "idle"):
         app.voice.events.put(dict(type="voice_status", state=state, message=state))
         one_poll(app, monkeypatch)
         assert app.peter_state == orb.state == state
-        assert orb.image is image and image.src.endswith(ORB_STATES[state] + '.webp')
+        assert orb.orb_image is image and image.src.endswith(ORB_STATES[state] + '.webp')
     assert not hasattr(orb, 'tick')
     app.cfg['theme_dark'] = False
     orb.set_state('idle')
     assert image.src == 'thinking-orbs/light-breathing.webp'
+
+
+def test_orb_state_updates_serialize_after_image_has_a_parent(peter_ui):
+    orb = peter_ui.home_view.orb
+    # Flet Container.image is a decoration field, not a child Image control.
+    # Mounting creates parent references that must never enter JSON decoration.
+    orb._build_add_commands()
+    assert orb.orb_image.parent is orb
+    assert orb.image is None
+    for state in ('thinking', 'speaking', 'idle'):
+        orb.set_state(state)
+        orb.before_update()
 
 
 def test_home_displays_typed_and_transcribed_messages_while_request_is_pending(peter_ui, monkeypatch):

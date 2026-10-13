@@ -53,6 +53,7 @@ class PeterHomeView:
         self.orb = PeterOrb(app, size=160 if compact else 208)
         self.state = ft.Text("", size=10, color=c["cyan"], weight=ft.FontWeight.W_600,
                              text_align=ft.TextAlign.CENTER)
+        self.state_icon = ft.Icon(ft.Icons.RADIO_BUTTON_CHECKED, size=13, color=c['cyan'])
         self.status = ft.Text("", size=12, color=c["muted"], text_align=ft.TextAlign.CENTER,
                               max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
         self.model_status = label(app.peter_model_status, c, 10)
@@ -71,7 +72,8 @@ class PeterHomeView:
                                   icon_color=c["muted"], on_click=lambda _: app.cancel_peter())
         center = panel(ft.Column([
             *([] if compact else [ft.Text("PETER", size=12, color=c["text"], weight=ft.FontWeight.W_600)]),
-            ft.Container(self.orb, alignment=ft.alignment.center), self.state, self.status,
+            ft.Container(self.orb, alignment=ft.alignment.center),
+            ft.Row([self.state_icon, self.state], alignment=ft.MainAxisAlignment.CENTER, spacing=6), self.status,
             ft.Container(self.conversation, expand=True, padding=ft.padding.symmetric(horizontal=4, vertical=6)),
             ft.Row([self.listen, self.stop], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
             ft.Row([self.input, self.send_button], spacing=8),
@@ -201,9 +203,13 @@ class PeterHomeView:
     def refresh(self, update=True):
         app, state = self.app, self.app.peter_state
         self.orb.set_state(state)
-        self.state.value = {"idle": "READY WHEN YOU ARE", "listening": "LISTENING", "thinking": "THINKING",
-                            "speaking": "SPEAKING", "error": "NEEDS ATTENTION"}.get(state, "READY WHEN YOU ARE")
+        self.state.value = {"idle": "STANDBY", "listening": "LISTENING", "thinking": "THINKING",
+                            "speaking": "TALKING", "error": "NEEDS ATTENTION"}.get(state, "STANDBY")
         self.state.color = self.c["danger"] if state == "error" else self.c["violet"] if state == "thinking" else self.c["cyan"]
+        self.state_icon.name = {"idle": ft.Icons.RADIO_BUTTON_CHECKED, "listening": ft.Icons.MIC_NONE_ROUNDED,
+                                "thinking": ft.Icons.AUTO_AWESOME_OUTLINED, "speaking": ft.Icons.VOLUME_UP_ROUNDED,
+                                "error": ft.Icons.ERROR_OUTLINE}.get(state, ft.Icons.RADIO_BUTTON_CHECKED)
+        self.state_icon.color = self.state.color
         self.status.value = app.assistant_status if app.assistant.busy else app.peter_status
         self.model_status.value = app.peter_model_status
         self.listen.text = "Finish listening" if state == "listening" else "Speak to Peter"

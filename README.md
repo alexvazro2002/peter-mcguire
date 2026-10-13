@@ -1,6 +1,10 @@
 # Peter (McGuire) · NexusDesk
 
 A local Fedora desktop assistant built on the original NexusDesk architecture.
+Peter's language model comes from your installed LM Studio models and is selected
+through its CLI registry and local API. Manage Peter's language-model weights in
+LM Studio.
+
 A central animated Peter bubble connects voice and typed conversation with your
 existing Notes, Calendar, tasks, lists, memories, tools and AI Library.
 

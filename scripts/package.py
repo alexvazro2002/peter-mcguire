@@ -23,7 +23,7 @@ SOURCE_TREES = {
     "tests": {".py"}, "web": {".ts", ".css", ".html"}, "assets": {".svg", ".desktop", ".webp"}, "docs": {".md"},
 }
 ORB_ASSETS = {f"assets/thinking-orbs/{theme}-{state}.webp"
-              for theme in ("dark", "light") for state in ("breathing", "listening", "working", "composing", "error")}
+              for theme in ("dark", "light") for state in ("breathing", "listening", "working", "speaking", "error")}
 EXCLUDED_DIRS = {".git", ".venv", "venv", ".runtime", "runtime", "__pycache__", ".pytest_cache",
                  "node_modules", "dist", "build", "notes", "tasks", "services", "logs", "models",
                  "ai_models", "projects", "previews", "screenshots", "brick-backups", "backups",

@@ -7,7 +7,10 @@ local API and installation checks from tests using synthetic services and data.
 
 Peter now uses npm thinking-orbs 0.3.1 through its actual exported canvas engine.
 Eight dark/light animations are rendered to lossless native-client WebP assets
-with 144 frames each; idle/listening/thinking/speaking play locally without Python
+with 144 frames each. All frames retain clear alpha borders and the first/last frames
+match exactly. The loop compositor transform is reset before blending, fixing
+clipping at the transition. Standby uses slow breathing, listening a gentle
+waveform, talking a faster waveform, and thinking orbiting dots. These play without Python
 frame polling. Typed requests, speech transcripts and Peter replies remain in the
 scrollable Home conversation, including the minimum window size.
 
@@ -36,7 +39,7 @@ guarantees. The CPU model load failed; GPU offload is now configured.
 ## Application and regression checks
 
 The installed Desktop application uses a fresh Python 3.11.16 environment and
-Flet 0.28.3. The final NexusDesk test suite passes: **298 tests in 16.38 seconds** in the installed Python 3.11 environment. Tests are restricted to `tests/`
+Flet 0.28.3. The final NexusDesk test suite passes: **301 tests in 16.10 seconds** in the installed Python 3.11 environment. Tests are restricted to `tests/`
 so the separately retained Stirling-PDF source does not enter test discovery.
 Coverage includes existing Notes/Calendar/Memory/tools/indexing behavior, validated
 Assistant writes and rollback/undo, local model discovery/authentication,
@@ -94,7 +97,9 @@ playback executables are installed. Startup greeting remains enabled.
 The actual Flet interface was inspected in the browser preview at 1280×720,
 1000×680 and 1440×900. The compact and normal Home layouts, animated orb, typed
 submission, conversation, source/change summary, undo and empty Notes view were
-checked. No browser error/warning messages were captured. All view/tool controls
+checked. No browser error/warning messages were captured during visual checks. Native
+state updates exposed a Container decoration-field collision in the orb wrapper;
+it was corrected and a mounted-control serialization regression was added. All view/tool controls
 also construct in the automated tests, including dark/light modes and the minimum
 window size. Browser previews use the same Python/Flet views as the native app;
 native file dialogs and physical microphone quality still need user review.

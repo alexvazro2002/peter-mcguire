@@ -2,11 +2,29 @@
   "package": "thinking-orbs",
   "version": "0.3.1",
   "source": "https://github.com/Jakubantalik/thinking-orbs",
-  "commit": "de85557ca220332586d070d8788c0e1d6e877a0d",
+  "upstreamReference": "de85557ca220332586d070d8788c0e1d6e877a0d",
   "preset": 64,
-  "pixels": 192,
+  "pixels": 208,
   "fps": 24,
   "frames": 144,
+  "states": {
+    "breathing": {
+      "sourceState": "breathing",
+      "speed": 0.45
+    },
+    "listening": {
+      "sourceState": "listening",
+      "speed": 0.75
+    },
+    "working": {
+      "sourceState": "working",
+      "speed": 1
+    },
+    "speaking": {
+      "sourceState": "listening",
+      "speed": 1.2
+    }
+  },
   "engine": "thinking-orbs/engine",
   "loop": "half-second crossfade to first upstream frame",
   "license": "MIT"
