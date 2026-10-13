@@ -625,6 +625,7 @@ class Workspace:
                 if self.view == "home" and self.home_view:
                     if peter_changed:
                         self.home_view.refresh()
+                    self.home_view.expire_conversation()
                 if changed and self.library_view and self.view == "library":
                     if chat_changed:
                         self.library_view.refresh_messages()
@@ -723,7 +724,6 @@ class Workspace:
                                  ("tools", "Tools", ft.Icons.GRID_VIEW_ROUNDED),
                                  ("notes", "Notes", ft.Icons.EDIT_NOTE_OUTLINED),
                                  ("library", "AI Library", ft.Icons.AUTO_AWESOME_OUTLINED),
-                                 ("assistant", "Peter", ft.Icons.FORUM_OUTLINED),
                                  ("memory", "Memory", ft.Icons.PSYCHOLOGY_OUTLINED)]:
             selected = self.view == key or self.view == "tool" and key == "tools"
             nav.append(ft.Container(ft.Column([ft.Icon(icon, size=22, color=c["accent"] if selected else c["muted"]),

@@ -143,3 +143,11 @@ destination is verified private before push. The private repository is
 - Read-only Gmail browser OAuth is implemented with a real loopback callback, state validation, PKCE, protected local tokens and account-bound state. Startup checks save a pending digest and advance the checkpoint after durable delivery. Recovery, batches, account changes, failures and cancellation have synthetic coverage.
 - The Google client JSON and account consent have not been supplied, so actual Gmail mailbox access is not connected or live-verified. Peter provides setup steps and accurate connection status.
 - Final source suite: 359 passed. No private workspace files, OAuth credentials or Gmail contents are included in source packaging.
+
+## British voice and Home update — 13 October 2026
+
+- Installed the pinned Kokoro British male stock voice George (speaker 26) locally, using VoiceStudio’s existing Sherpa runtime. The actual eSpeak identifier `en` selects English (Great Britain); `en-gb` was rejected by the installed native API and was corrected before selection.
+- Lowered pitch by 1.5 semitones using RubberBand with tempo/formants preserved. The 7.277-second final sample was transcribed word for word by local Whisper in 1.201 seconds. Four synthesis threads improved generation from 7.111 to 6.179 seconds for the same sample.
+- Actual LM Studio replies matched the composed professional prompt, with British spelling and brief replies (0.95–2.36seconds in the sample requests). The selected model and its fast settings remain in LM Studio.
+- Removed the duplicate Peter sidebar entry. Verified new Home messages appear, fade after 20 idle seconds, return with Show history, and hide without deleting stored conversation. History source and undo actions remain available.
+- Installed regression suite: 381 passed. The speech preview contains only a synthetic test sentence; no personal speech or microphone recording was made for validation.

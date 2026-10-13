@@ -19,8 +19,8 @@ Usage: ./install-voice.sh [--runtime DIR] [--app-dir DIR] [--torch cpu|cuda]
 Installs checksummed VoiceStudio Electron 0.5.6 and its pinned Python backend.
 The default CPU runtime avoids CUDA packages on machines without CUDA drivers.
 Source, Python, dependencies and audio/model caches remain under .runtime/.
-This explicit setup downloads missing Peter voice weights (~80 MB Apache-2.0
-KittenTTS and ~150 MB MIT Whisper base) through VoiceStudio's own local API.
+This explicit setup downloads missing Peter voice weights: British Kokoro
+(~153 MiB), plus KittenTTS (~80 MB) and Whisper base (~150 MB).
 Existing VoiceStudio settings and models are preserved.
 HELP
 }
@@ -128,6 +128,7 @@ fi
 # wheel. The 4.6.0 wheel fixes the native flag and remains compatible with
 # the frozen faster-whisper package. Keep this override explicit/reproducible.
 "$UV_BIN" pip install --python "$VOICE_PYTHON" --no-deps 'ctranslate2==4.6.0'
+"$UV_BIN" pip install --python "$VOICE_PYTHON" --no-deps 'sherpa-onnx==1.13.6'
 (cd "$VOICE_RUNTIME" && "$VOICE_PYTHON" scripts/setup.py)
 "$VOICE_PYTHON" - <<'PY'
 import json
@@ -139,5 +140,6 @@ print(json.dumps({"python": sys.version.split()[0], "torch": torch.__version__,
 PY
 "$VOICE_PYTHON" "$PROJECT_DIR/scripts/install_voice_models.py" --runtime "$VOICE_RUNTIME" \
   --data-dir "$VOICE_DATA_ROOT/.runtime/voice-data" --cache-dir "$VOICE_DATA_ROOT/.runtime/voice-cache"
+"$VOICE_PYTHON" "$PROJECT_DIR/scripts/install_british_voice.py" --output "$VOICE_DATA_ROOT/.runtime/british-voice"
 printf 'VoiceStudio Electron %s: %s\nBackend commit: %s\nRuntime: %s\n' "$VOICE_VERSION" "$VOICE_APP" "$VOICE_COMMIT" "$VOICE_RUNTIME"
 printf 'Run the Peter launcher to start the verified local voice backend automatically.\n'

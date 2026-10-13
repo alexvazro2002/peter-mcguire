@@ -36,6 +36,7 @@ def test_cities_sharing_timezone_keep_their_own_identity():
     "http://169.254.169.254/", "http://[::1]/", "http://[::ffff:127.0.0.1]/", "http://10.0.0.1/",
     "http://user:password@example.com/", "https://example.com:8080/", "https://example.com/?access_token=hidden",
     "https://example.com/\r\nX-Header:value",
+    "https://example.com/?client_secret=hidden", "https://example.com/?refresh_token=hidden", "https://example.com/?id_token=hidden",
 ])
 def test_private_local_credential_and_nonweb_urls_are_blocked_before_dns(url, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *args: pytest.fail("Forbidden URL must not reach DNS"))

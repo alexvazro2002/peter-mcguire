@@ -132,7 +132,7 @@ def _normalise_url(url):
             raise
         if "." not in hostname or hostname.endswith(_PRIVATE_SUFFIXES):
             raise LiveInfoError("Local and internal hostnames cannot be accessed by web tools.") from None
-    if any(key.casefold() in {"token", "access_token", "api_key", "apikey", "password", "secret", "authorization"}
+    if any(key.casefold() in {"token", "access_token", "refresh_token", "id_token", "client_secret", "api_key", "apikey", "password", "secret", "authorization"}
            for key, _value in parse_qsl(parts.query, keep_blank_values=True)):
         raise LiveInfoError("Web tools do not send credential-bearing URLs.")
     authority = "[" + hostname + "]" if ":" in hostname else hostname

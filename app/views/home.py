@@ -1,5 +1,6 @@
 """Peter's observatory, with live links to the existing workspace features."""
 from datetime import date, datetime, time, timedelta
+import time as clock
 
 import flet as ft
 
@@ -59,6 +60,16 @@ class PeterHomeView:
         self.model_status = label(app.peter_model_status, c, 10)
         self.conversation = ft.ListView(expand=True, spacing=10, auto_scroll=True)
         self._message_signature = None
+        if not hasattr(app, "home_conversation_state"):
+            app.home_conversation_state = dict(history=False, hidden=True, recent_start=len(app.assistant.messages),
+                last_message_at=None, seen=self.message_signature(app.assistant.messages))
+        self.conversation_state = app.home_conversation_state
+        self.conversation_frame = ft.Container(self.conversation, expand=True, opacity=0,
+            animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
+            padding=ft.padding.symmetric(horizontal=4, vertical=6))
+        self.history_toggle = ft.TextButton("Show history", on_click=self.toggle_history,
+                                            height=30 if compact else 40,
+                                            style=ft.ButtonStyle(color=c["muted"]))
         self.input = ft.TextField(value=app.assistant_draft, hint_text="Ask Peter anything…",
                                  hint_style=ft.TextStyle(color=c["dim"]), color=c["text"],
                                  bgcolor=c["bg"], border_color=c["border"], border_radius=12,
@@ -74,12 +85,10 @@ class PeterHomeView:
             *([] if compact else [ft.Text("PETER", size=12, color=c["text"], weight=ft.FontWeight.W_600)]),
             ft.Container(self.orb, alignment=ft.alignment.center),
             ft.Row([self.state_icon, self.state], alignment=ft.MainAxisAlignment.CENTER, spacing=6), self.status,
-            ft.Container(self.conversation, expand=True, padding=ft.padding.symmetric(horizontal=4, vertical=6)),
+            self.conversation_frame,
             ft.Row([self.listen, self.stop], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
             ft.Row([self.input, self.send_button], spacing=8),
-            ft.TextButton("Open conversation", on_click=lambda _: app.navigate("assistant"),
-                          height=30 if compact else 40,
-                          style=ft.ButtonStyle(color=c["muted"])),
+            self.history_toggle,
             *([] if compact else [self.model_status])
         ], expand=True, spacing=5 if compact else 8, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
             c, padding=12 if compact else 18, expand=5)
@@ -182,25 +191,104 @@ class PeterHomeView:
             self.input.value = ""
             self.refresh()
 
+    @staticmethod
+    def message_signature(messages):
+        return tuple((m["role"], m["text"], m.get("timestamp"), m.get("operation_id")) for m in messages)
+
+    def toggle_history(self, _):
+        state = self.conversation_state
+        state["history"] = not state["history"]
+        if not state["history"]:
+            state["hidden"] = True
+            state["recent_start"] = len(self.app.assistant.messages)
+        self._message_signature = None
+        self.refresh_conversation()
+        self.content.update()
+
+    def source(self, source):
+        # Keep the existing source handlers available without the duplicate chat tab.
+        from app.views.assistant import AssistantView
+        AssistantView.source(self, source)
+
+    def undo(self, operation_id):
+        try:
+            self.app.assistant.undo(operation_id)
+            self.app.assistant_data_changed()
+            if self.app.home_view:
+                self.app.home_view.refresh()
+            self.app.notify("Peter's changes undone.")
+        except (OSError, ValueError, RuntimeError) as error:
+            self.app.notify(str(error), True)
+
+    def expire_conversation(self, *, now=None):
+        """One opacity update after twenty idle seconds; Flet animates the fade."""
+        state = self.conversation_state
+        now = clock.monotonic() if now is None else now
+        if state["history"] or state["hidden"] or state["last_message_at"] is None:
+            return False
+        if self.app.assistant.busy or self.app.peter_state in {"listening", "thinking", "speaking"}:
+            state["last_message_at"] = now
+            return False
+        if now - state["last_message_at"] < 20:
+            return False
+        state["hidden"] = True
+        self.conversation_frame.opacity = 0
+        self.conversation_frame.update()
+        return True
+
     def refresh_conversation(self):
-        """Keep typed and transcribed messages visible, including in a small window."""
-        messages = self.app.assistant.messages[-20:]
-        signature = tuple((message["role"], message["text"]) for message in messages)
+        """Show the current turn briefly; saved history stays available on demand."""
+        saved, state = self.app.assistant.messages, self.conversation_state
+        incoming = self.message_signature(saved)
+        if incoming != state["seen"]:
+            common = 0
+            for before, after in zip(state["seen"], incoming):
+                if before != after:
+                    break
+                common += 1
+            if len(incoming) > common:
+                appended_users = [index for index in range(common, len(saved)) if saved[index]["role"] == "user"]
+                if appended_users:
+                    state["recent_start"] = appended_users[-1]
+                elif state["hidden"]:
+                    state["recent_start"] = common
+                state["last_message_at"] = clock.monotonic()
+                state["hidden"] = False
+            else:
+                state["recent_start"] = min(state["recent_start"], len(saved))
+            state["seen"] = incoming
+        messages = saved[-200:] if state["history"] else saved[state["recent_start"]:]
+        signature = (state["history"], state["hidden"], self.message_signature(messages), self.app.assistant.busy)
         if signature == self._message_signature:
             return
         self._message_signature = signature
+        self.history_toggle.text = "Hide" if state["history"] else "Show history"
+        self.conversation.auto_scroll = not state["history"]
+        self.conversation_frame.opacity = 1 if state["history"] or not state["hidden"] and messages else 0
         c = self.c
-        self.conversation.controls = [ft.Container(ft.Column([
-            ft.Text("YOU" if message["role"] == "user" else "PETER", size=9,
+        try:
+            committed = {record["id"] for record in self.app.assistant.history.recent(limit=200)
+                         if record["status"] == "committed"}
+        except (OSError, ValueError):
+            committed = set()
+        controls = []
+        for message in messages:
+            contents = [ft.Text("YOU" if message["role"] == "user" else "PETER", size=9,
                     weight=ft.FontWeight.W_600,
                     color=c["cyan"] if message["role"] == "user" else c["dim"]),
-            ft.Text(message["text"], size=12, color=c["text"], selectable=True)
-        ], spacing=4), padding=10, border_radius=9,
-            bgcolor=c["bg"] if message["role"] == "user" else c["raised"])
-            for message in messages]
-        if not messages:
-            self.conversation.controls = [ft.Text("Your conversation appears here. Type below or speak to Peter.",
-                                                 size=12, color=c["muted"], text_align=ft.TextAlign.CENTER)]
+                        ft.Text(message["text"], size=12, color=c["text"], selectable=True)]
+            if message.get("sources"):
+                contents.append(ft.Row([ft.TextButton(source.get("title") or source.get("name") or source.get("path") or source.get("date") or
+                    ("Memory" if source["kind"] == "memory" else "Source"), icon=ft.Icons.NORTH_EAST,
+                    on_click=lambda _, item=source: self.source(item), style=ft.ButtonStyle(color=c["cyan"]))
+                    for source in message["sources"]], wrap=True, spacing=4))
+            if message.get("operation_id"):
+                operation = message["operation_id"]
+                contents.append(ft.TextButton("Undo", icon=ft.Icons.UNDO, disabled=self.app.assistant.busy or operation not in committed,
+                    on_click=lambda _, oid=operation: self.undo(oid), style=ft.ButtonStyle(color=c["accent"])))
+            controls.append(ft.Container(ft.Column(contents, spacing=4), padding=10, border_radius=9,
+                bgcolor=c["bg"] if message["role"] == "user" else c["raised"]))
+        self.conversation.controls = controls or ([ft.Text("No saved conversation yet.", size=12, color=c["muted"])] if state["history"] else [])
 
     def refresh(self, update=True):
         app, state = self.app, self.app.peter_state

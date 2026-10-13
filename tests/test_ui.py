@@ -238,7 +238,93 @@ def test_home_displays_typed_and_transcribed_messages_while_request_is_pending(p
     app.voice.events.put(dict(type='transcript', text='A spoken message'))
     one_poll(app, monkeypatch)
     assert app.home_view.conversation.controls[-1].content.controls[1].value == 'A spoken message'
-    assert app.home_view.conversation.controls[0].content.controls[1].value == 'A typed message'
+    assert len(app.home_view.conversation.controls) == 1
+    assert [message['text'] for message in app.assistant.messages] == ['A typed message', 'A spoken message']
+
+
+def test_home_messages_fade_after_twenty_idle_seconds_once(peter_ui, monkeypatch):
+    from app.views import home
+    app, clock = peter_ui, [100.0]
+    monkeypatch.setattr(home.clock, 'monotonic', lambda: clock[0])
+    app.assistant.append(dict(role='user', text='Current request'))
+    app.home_view.refresh_conversation()
+    clock[0] = 102.0
+    app.assistant.append(dict(role='assistant', text='Current reply'))
+    app.home_view.refresh_conversation()
+    view = app.home_view
+    assert view.conversation_frame.opacity == 1 and len(view.conversation.controls) == 2
+    assert not view.expire_conversation(now=121.9)
+    app.assistant.busy = True
+    assert not view.expire_conversation(now=130.0)
+    app.assistant.busy = False
+    app.peter_state = 'speaking'
+    assert not view.expire_conversation(now=130.0)
+    app.peter_state = 'idle'
+    assert not view.expire_conversation(now=149.9)
+    assert view.expire_conversation(now=150.0)
+    assert view.conversation_frame.opacity == 0 and view.conversation_frame.animate_opacity.duration == 300
+    assert not view.expire_conversation(now=160.0)
+    assert len(app.assistant.messages) == 2  # Fading never deletes stored messages.
+    clock[0] = 170.0
+    app.assistant.append(dict(role='user', text='Next request'))
+    view.refresh_conversation()
+    assert view.conversation_frame.opacity == 1 and len(view.conversation.controls) == 1
+    assert view.conversation.controls[0].content.controls[1].value == 'Next request'
+
+
+def test_home_history_toggle_survives_navigation_and_does_not_expire(peter_ui):
+    from app.views.home import build_home
+    app = peter_ui
+    app.assistant.messages = [dict(role='user' if n % 2 == 0 else 'assistant', text=f'Message {n}') for n in range(200)]
+    del app.home_conversation_state
+    build_home(app)
+    view = app.home_view
+    assert view.conversation.controls == [] and view.conversation_frame.opacity == 0
+    assert view.history_toggle.text == 'Show history'
+    view.toggle_history(None)
+    assert view.history_toggle.text == 'Hide' and len(view.conversation.controls) == 200
+    assert view.conversation_frame.opacity == 1 and not view.conversation.auto_scroll
+    assert not view.expire_conversation(now=100000)
+    app.navigate('tools')
+    app.navigate('home')
+    assert app.home_view.history_toggle.text == 'Hide' and len(app.home_view.conversation.controls) == 200
+    app.home_view.toggle_history(None)
+    assert app.home_view.history_toggle.text == 'Show history' and app.home_view.conversation_frame.opacity == 0
+    assert len(app.assistant.messages) == 200
+    app.assistant.messages.append(dict(role='user', text='New message'))
+    app.home_view.refresh_conversation()
+    assert app.home_view.conversation_frame.opacity == 1
+    assert app.home_view.conversation.controls[0].content.controls[1].value == 'New message'
+
+
+def test_home_source_and_undo_actions_work_without_conversation_tab(peter_ui):
+    from app.assistant.transactions import Transaction
+    from app.assistant.tools import Tools
+    app = peter_ui
+    transaction = Transaction(app.vault, app.calendar, app.assistant.history)
+    tools = Tools(transaction)
+    tools.execute('create_note', dict(name='Home action check', content='Verified.'))
+    operation = transaction.commit('Synthetic Home undo check')
+    app.assistant.append(dict(role='assistant', text='Saved.', sources=[dict(kind='note', name='Home action check')], operation_id=operation))
+    app.home_view.refresh_conversation()
+    message = app.home_view.conversation.controls[-1].content.controls
+    source_button, undo_button = message[2].controls[0], message[3]
+    assert not undo_button.disabled
+    source_button.on_click(None)
+    assert app.view == 'notes' and app.note_name == 'Home action check'
+    app.navigate('home')
+    app.home_view.undo(operation)
+    assert 'Home action check' not in app.vault.names()
+    assert app.assistant.messages[-1]['text'].startswith('Undid that operation.')
+
+
+def test_sidebar_has_one_home_entry_and_no_duplicate_peter_conversation(peter_ui):
+    rail = peter_ui.root.content.controls[0].content
+    labels = [item.content.controls[1].value for item in rail.controls
+              if isinstance(item, ft.Container) and isinstance(item.content, ft.Column)
+              and len(item.content.controls) > 1 and isinstance(item.content.controls[1], ft.Text)]
+    assert labels == ['Calendar', 'Tools', 'Notes', 'AI Library', 'Memory']
+    assert rail.controls[0].tooltip == 'Home'
 
 
 def test_startup_preloads_shared_model_once_and_greets_through_voice(peter_ui, monkeypatch):

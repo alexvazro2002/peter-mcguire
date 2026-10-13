@@ -240,3 +240,35 @@ def test_service_rejects_uninstalled_runtime_and_removes_desktop_parent_watchdog
     assert env["OMNIVOICE_TTS_BACKEND"] == "kittentts"
     assert env["ASR_MODEL_FASTER"] == "Systran/faster-whisper-base"
     assert env["OMNIVOICE_DATA_DIR"] == str(tmp_path / ".runtime" / "voice-data")
+
+
+def test_british_voice_uses_installed_runtime_pitch_and_preserves_private_text(tmp_path):
+    from app.voice import VoiceController
+    model = tmp_path / 'model'
+    model.mkdir()
+    for name in ('model.int8.onnx', 'voices.bin', 'tokens.txt'):
+        (model / name).write_bytes(b'fixture')
+    runtime = tmp_path / 'runtime'
+    (runtime / '.venv/bin').mkdir(parents=True)
+    (runtime / '.venv/bin/python').write_text('fixture')
+    controller = VoiceController(dict(voice_model='kokoro-onnx', voice_runtime=str(runtime), british_voice_path=str(model), voice_id='bm_george', voice_speed=.98, voice_pitch=-1.5), which=lambda name: '/usr/bin/' + name)
+    calls = []
+    def run(argv, cancel, **kwargs):
+        calls.append((argv, kwargs))
+        if '--text-file' in argv:
+            textfile = Path(argv[argv.index('--text-file')+1])
+            assert textfile.read_text() == 'Private synthetic reply'
+            output = Path(argv[argv.index('--output')+1]); output.write_bytes(wav_bytes())
+        elif '-af' in argv:
+            Path(argv[-1]).write_bytes(wav_bytes())
+    controller._run_audio = run
+    try:
+        controller._speak_british('Private synthetic reply', '/usr/bin/pw-play', threading.Event())
+        assert calls[0][1]['private'] is True
+        assert calls[0][0][calls[0][0].index('--voice')+1] == 'bm_george'
+        assert all('Private synthetic reply' not in arg for argv, _ in calls for arg in argv)
+        assert 'pitch=0.91700404' in calls[1][0][calls[1][0].index('-af')+1]
+        assert calls[-1][0][0] == '/usr/bin/pw-play'
+        assert not Path(calls[-1][0][-1]).exists()
+    finally:
+        controller.close()

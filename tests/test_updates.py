@@ -335,8 +335,8 @@ def test_graph_pan_zoom_reset_and_resize_preserve_the_live_graph(ui):
 
 
 def test_navigation_order_and_notepad_icon(ui):
-    controls = ui.root.content.controls[0].content.controls[1:7]
-    assert [control.content.controls[1].value for control in controls] == ["Calendar", "Tools", "Notes", "AI Library", "Peter", "Memory"]
+    controls = ui.root.content.controls[0].content.controls[1:6]
+    assert [control.content.controls[1].value for control in controls] == ["Calendar", "Tools", "Notes", "AI Library", "Memory"]
     assert controls[2].content.controls[0].name == ft.Icons.EDIT_NOTE_OUTLINED
 
 

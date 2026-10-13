@@ -24,8 +24,9 @@ DEFAULTS = {
     "notifications": {"enabled": False, "server_url": "https://ntfy.sh", "topic": "", "include_answer": False},
     "peter": {
         "enabled": True, "autostart": True, "speech_enabled": True, "startup_greeting": True,
-        "greeting": "Good day. I'm Peter McGuire. I'm here to help.",
-        "voice_url": "http://127.0.0.1:3900", "voice_model": "kittentts", "voice_id": "expr-voice-2-m",
+        "greeting": "Systems are ready. At your service.",
+        "voice_url": "http://127.0.0.1:3900", "voice_model": "kokoro-onnx", "voice_id": "bm_george",
+        "voice_speed": 0.98, "voice_pitch": -1.5, "british_voice_path": "",
         "asr_model": "whisper-1", "record_seconds": 30, "voice_timeout": 120, "voice_language": "en",
         "voice_runtime": "",
     },

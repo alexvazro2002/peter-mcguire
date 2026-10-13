@@ -234,6 +234,8 @@ def build_settings(app):
     voice_id = field(c, label="Voice ID", value=peter.get("voice_id", "expr-voice-2-m"), expand=True)
     asr_model = field(c, label="Transcription model", value=peter.get("asr_model", "whisper-1"), expand=True)
     record_seconds = field(c, label="Maximum recording seconds (1–60)", value=str(peter.get("record_seconds", 30)))
+    voice_speed = field(c, label="Speaking pace (0.7–1.4; 1 is normal)", value=str(peter.get("voice_speed", 0.98)), expand=True)
+    voice_pitch = field(c, label="Voice pitch (−4 deeper to +2 higher)", value=str(peter.get("voice_pitch", -1.5)), expand=True)
     internet = ft.Switch(label="Allow public internet lookups", value=app.cfg["internet"]["enabled"])
     gmail_startup = ft.Switch(label="Check new Gmail inbox messages at every launch", value=app.cfg["gmail"]["check_on_startup"])
     gmail_client = field(c, label="Google sign-in configuration (JSON file)", value=app.cfg["gmail"]["client_file"], expand=True)
@@ -287,11 +289,15 @@ def build_settings(app):
             recording_limit = float(record_seconds.value or "0")
             if not 1 <= recording_limit <= 60:
                 raise ValueError("Maximum recording duration must be between 1 and 60 seconds.")
+            speed_value, pitch_value = float(voice_speed.value), float(voice_pitch.value)
+            if not 0.7 <= speed_value <= 1.4 or not -4 <= pitch_value <= 2:
+                raise ValueError("Choose speaking pace from 0.7 to 1.4 and pitch from -4 to +2.")
             voice_values = dict(enabled=voice_enabled.value, autostart=autostart.value,
                                 speech_enabled=speech_enabled.value, startup_greeting=startup_greeting.value,
                                 greeting=greeting.value or "", voice_url=voice_endpoint,
                                 voice_model=(voice_model.value or "").strip(), voice_id=(voice_id.value or "").strip(),
-                                asr_model=(asr_model.value or "").strip(), record_seconds=recording_limit)
+                                asr_model=(asr_model.value or "").strip(), record_seconds=recording_limit,
+                                voice_speed=speed_value, voice_pitch=pitch_value)
             if not all(voice_values[key] for key in ("voice_model", "voice_id", "asr_model")):
                 raise ValueError("Choose a speech model, voice ID and transcription model.")
             for key, minimum, maximum in [("gpu_layers", -1, 999), ("context_size", 4096, 131072), ("max_tokens", 128, 16000)]:
@@ -330,7 +336,8 @@ def build_settings(app):
                          label("Markdown stays directly editable in Obsidian or another editor. Changing vaults does not move files.", c)], spacing=14), c),
         panel(ft.Column([ft.Text("Peter · Local voice", size=18, color=c["text"]), voice_enabled, autostart,
                          speech_enabled, startup_greeting, greeting, voice_url,
-                         ft.Row([voice_model, voice_id, asr_model], spacing=12), record_seconds,
+                         ft.Row([voice_model, voice_id, asr_model], spacing=12), ft.Row([voice_speed, voice_pitch], spacing=12), record_seconds,
+                         label("Peter's British voice uses a male stock preset with a modest pitch reduction. His manner is calm, concise and professionally reserved.", c, 11),
                          label("Tap Peter's bubble to start recording and again to finish. Speech and transcription use your local VoiceStudio APIs. Muting speech keeps microphone input available.", c, 11)], spacing=14), c),
         panel(ft.Column([ft.Text("Internet & Gmail", size=18, color=c["text"]), internet,
                          label("Peter can look up current times, live weather and public webpages. Web searches use words from your current message.", c, 11),

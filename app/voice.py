@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import queue
 import re
 import shutil
@@ -21,6 +22,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
+from app.config import BASE_DIR, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +230,9 @@ class VoiceController:
         if not player:
             raise VoiceError("Install pipewire-utils or alsa-utils to play Peter's speech.")
         model = self.settings.get("voice_model", "kittentts")
+        if model == "kokoro-onnx":
+            self._speak_british(text, player, cancelled)
+            return
         catalogue = self._json(session, "/models", cancelled)
         models = catalogue.get("models", []) if isinstance(catalogue, dict) else []
         # Kitten's selected checkpoint is pinned by the Linux service launcher.
@@ -252,7 +257,7 @@ class VoiceController:
                 response = self._request(session, "POST", "/v1/audio/speech", cancelled, stream=True,
                                          json=dict(model=model, input=chunk,
                                                    voice=self.settings.get("voice_id", "expr-voice-2-m"),
-                                                   response_format="wav", speed=1.0))
+                                                   response_format="wav", speed=float(self.settings.get("voice_speed", 1.0))))
                 try:
                     size = 0
                     with audio.open("wb") as output:
@@ -267,6 +272,39 @@ class VoiceController:
                 self._validate_wav(audio)
                 self._status("speaking", "Peter is speaking", cancelled)
                 self._run_audio([player, str(audio)], cancelled, limit=180)
+
+    def _speak_british(self, text, player, cancelled):
+        """Use the installed runtime's real British stock voice; keep synthesis cancellable."""
+        runtime = Path(self.settings.get("voice_runtime") or BASE_DIR / ".runtime" / "VoiceStudio").expanduser()
+        python = runtime / ".venv" / "bin" / "python"
+        models = Path(self.settings.get("british_voice_path") or DATA_DIR / ".runtime" / "british-voice").expanduser()
+        if not python.is_file() or not all((models / name).is_file() for name in ("model.int8.onnx", "voices.bin", "tokens.txt")):
+            raise VoiceError("Peter's British voice is not installed. Run install-voice.sh to prepare it.")
+        speed, pitch = float(self.settings.get("voice_speed", 0.98)), float(self.settings.get("voice_pitch", -1.5))
+        if not math.isfinite(speed) or not 0.7 <= speed <= 1.4 or not math.isfinite(pitch) or not -4 <= pitch <= 2:
+            raise VoiceError("Choose voice speed from 0.7 to 1.4 and pitch from -4 to +2 semitones in Settings.")
+        ffmpeg = self._which("ffmpeg") if pitch else None
+        if pitch and not ffmpeg:
+            raise VoiceError("Install FFmpeg to apply Peter's deeper voice pitch.")
+        self._status("thinking", "Preparing Peter's British voice", cancelled)
+        with tempfile.TemporaryDirectory(prefix="peter-voice-") as directory:
+            directory = Path(directory)
+            content, original, audio = directory / "speech.txt", directory / "original.wav", directory / "speech.wav"
+            content.write_text(text, encoding="utf-8")
+            self._run_audio([str(python), str(BASE_DIR / "scripts" / "british_voice.py"),
+                             "--model-dir", str(models), "--text-file", str(content), "--output", str(original),
+                             "--voice", self.settings.get("voice_id", "bm_george"), "--speed", str(speed)],
+                            cancelled, limit=self.timeout, private=True)
+            self._validate_wav(original)
+            if pitch:
+                self._run_audio([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(original),
+                                 "-af", f"rubberband=tempo=1:pitch={2 ** (pitch / 12):.8f}:formant=preserved",
+                                 "-c:a", "pcm_s16le", str(audio)], cancelled, limit=30)
+                self._validate_wav(audio)
+            else:
+                audio = original
+            self._status("speaking", "Peter is speaking", cancelled)
+            self._run_audio([player, str(audio)], cancelled, limit=180)
 
     @staticmethod
     def _validate_wav(path):
@@ -310,7 +348,7 @@ class VoiceController:
             self._status("idle", "Speech recognized", cancelled)
             self.events.put(dict(type="transcript", text=text))
 
-    def _run_audio(self, argv, cancelled, limit, recording=False):
+    def _run_audio(self, argv, cancelled, limit, recording=False, private=False):
         self._check(cancelled)
         # Use a file for diagnostics so subprocess pipe buffers cannot deadlock.
         with tempfile.TemporaryFile() as errors:
@@ -331,7 +369,7 @@ class VoiceController:
                 self._check(cancelled)
                 if process.returncode and not recording or process.returncode and not stopped:
                     errors.seek(0)
-                    detail = errors.read(500).decode("utf-8", errors="replace").strip()
+                    detail = "" if private else errors.read(500).decode("utf-8", errors="replace").strip()
                     raise VoiceError("Local audio process failed" + (": " + detail if detail else "."))
             finally:
                 self._stop_process(process, recording=recording)
