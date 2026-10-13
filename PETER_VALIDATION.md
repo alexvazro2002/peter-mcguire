@@ -135,3 +135,11 @@ destination is verified private before push. The private repository is
 - Hardware microphone selection, speech recognition on the user's voice,
   audible pronunciation and native file dialogs require direct user review.
   There is no continuous listening or wake word.
+
+## Internet and Gmail update — 13 October 2026
+
+- Current clocks recognize city spelling variants, including “china shang hai”, and answer without loading the model. Tested in the actual Flet window, with the written user message and answer visible.
+- Actual LM Studio calls used public weather, web search, and page-reading tools. Weather: 4.84s; search: 2.58s; page title: 2.25s. All returned source links. Public HTTP connections use validated public IPs, hostname-verified TLS, bounded responses and revalidated redirects.
+- Read-only Gmail browser OAuth is implemented with a real loopback callback, state validation, PKCE, protected local tokens and account-bound state. Startup checks save a pending digest and advance the checkpoint after durable delivery. Recovery, batches, account changes, failures and cancellation have synthetic coverage.
+- The Google client JSON and account consent have not been supplied, so actual Gmail mailbox access is not connected or live-verified. Peter provides setup steps and accurate connection status.
+- Final source suite: 359 passed. No private workspace files, OAuth credentials or Gmail contents are included in source packaging.

@@ -11,9 +11,10 @@ from app.memory import MemoryStore
 
 
 class AssistantService:
-    def __init__(self, vault, calendar, runtime, conversation_path, zone="Europe/London", memory=None):
+    def __init__(self, vault, calendar, runtime, conversation_path, zone="Europe/London", memory=None, *, external=None):
         self.vault, self.calendar, self.runtime, self.path, self.zone = vault, calendar, runtime, conversation_path, zone
         self.memory = memory or MemoryStore(conversation_path.parent / "personal-memory.json")
+        self.external = external
         self.history = History(vault, calendar, vault.root / ".history" / "assistant", memory=self.memory)
         self.events, self.cancel, self.lock = queue.Queue(), threading.Event(), threading.RLock()
         self.busy, self.messages, self.warning, self.storage_error = False, [], "", ""
@@ -37,10 +38,15 @@ class AssistantService:
         atomic_write(self.path, json.dumps(self.messages[-200:], ensure_ascii=False, indent=2) + "\n")
 
     def append(self, message):
-        message.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
-        self.messages.append(message)
-        self.messages = self.messages[-200:]
-        self.persist()
+        with self.lock:
+            message.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+            previous = self.messages
+            self.messages = [*previous, message][-200:]
+            try:
+                self.persist()
+            except (OSError, ValueError):
+                self.messages = previous
+                raise
 
     def send(self, request):
         with self.lock:
@@ -60,10 +66,14 @@ class AssistantService:
 
         def work():
             try:
+                quick = self.external.quick_answer(request, self.zone) if self.external is not None else None
+                if quick is not None:
+                    emit(type="answer", **quick)
+                    return
                 emit(type="status", message="Connecting to your local model")
                 self.runtime.ensure()
                 engine = Engine(self.vault, self.calendar, self.history, self.runtime.client,
-                                self.runtime.settings, self.zone)
+                                self.runtime.settings, self.zone, external=self.external)
                 result = engine.run(request, conversation, emit, self.cancel)
                 emit(type="answer", **result)
             except Exception as error:

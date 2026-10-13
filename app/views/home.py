@@ -88,7 +88,7 @@ class PeterHomeView:
                                label(now.strftime("%A, %d %B %Y"), c, 12)], spacing=6),
                     ft.Container(expand=True),
                     ft.Container(ft.Row([ft.Icon(ft.Icons.LOCK_OUTLINE, color=c["cyan"], size=13),
-                                         label("ON DEVICE", c, 10)], spacing=6),
+                                         label("LOCAL AI", c, 10)], spacing=6),
                                  padding=10, border_radius=8, bgcolor=c["surface"])], spacing=10),
             ft.Row([self.focus(now), center, self.quick_access()], expand=True, spacing=14,
                    vertical_alignment=ft.CrossAxisAlignment.STRETCH)
@@ -166,6 +166,8 @@ class PeterHomeView:
                         ft.Text("Memory", size=14, color=c["text"])], spacing=8), label(memory_status, c, 11)
             ], spacing=8), padding=12, bgcolor=c["bg"], border_radius=8, ink=True,
                 on_click=lambda _: app.navigate("memory")),
+            ft.TextButton("Gmail & internet", icon=ft.Icons.MAIL_OUTLINE, on_click=lambda _: app.navigate("settings"),
+                          style=ft.ButtonStyle(color=c["cyan"])),
             ft.TextButton("AI Library", icon=ft.Icons.AUTO_AWESOME_OUTLINED, on_click=lambda _: app.navigate("library"),
                           style=ft.ButtonStyle(color=c["muted"]))
         ]

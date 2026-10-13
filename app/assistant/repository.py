@@ -22,7 +22,7 @@ MAX_BYTES = 1_000_000
 
 def private(path):
     name = path.name.casefold()
-    return (name in PRIVATE_FILES or name == ".env" or name.startswith(".env.") or
+    return (name in PRIVATE_FILES or name == "token.json" or name.startswith(("client_secret", "gmail", "credential", "secret")) and path.suffix == ".json" or name == ".env" or name.startswith(".env.") or
             path.suffix.casefold() in {".pem", ".key", ".p12", ".pfx"})
 
 

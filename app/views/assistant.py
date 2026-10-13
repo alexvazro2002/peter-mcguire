@@ -54,7 +54,13 @@ class AssistantView:
         self.refresh()
 
     def source(self, source):
-        if source["kind"] == "repository":
+        if source["kind"] in {"web", "email"}:
+            try:
+                from app.integrations import source_url
+                self.app.page.launch_url(source_url(source))
+            except ValueError as error:
+                self.app.notify(str(error), True)
+        elif source["kind"] == "repository":
             try:
                 from app.assistant.repository import Repository
                 result = Repository().read(source["path"], limit=8000)
@@ -128,7 +134,7 @@ class AssistantView:
                         ft.Markdown(message["text"], selectable=True, auto_follow_links=False,
                                     md_style_sheet=ft.MarkdownStyleSheet(p_text_style=ft.TextStyle(size=14, color=c["text"], height=1.6)))]
             if message.get("sources"):
-                contents.append(ft.Row([ft.TextButton("Memory" if s["kind"] == "memory" else s.get("name") or s.get("path") or s.get("date") or "Unscheduled",
+                contents.append(ft.Row([ft.TextButton("Memory" if s["kind"] == "memory" else s.get("title") or s.get("name") or s.get("path") or s.get("date") or "Unscheduled",
                                                       icon=ft.Icons.NORTH_EAST, on_click=lambda e, src=s: self.source(src),
                                                       style=ft.ButtonStyle(color=c["cyan"])) for s in message["sources"]], wrap=True, spacing=4))
             operation_id = message.get("operation_id")

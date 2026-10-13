@@ -234,6 +234,21 @@ def build_settings(app):
     voice_id = field(c, label="Voice ID", value=peter.get("voice_id", "expr-voice-2-m"), expand=True)
     asr_model = field(c, label="Transcription model", value=peter.get("asr_model", "whisper-1"), expand=True)
     record_seconds = field(c, label="Maximum recording seconds (1–60)", value=str(peter.get("record_seconds", 30)))
+    internet = ft.Switch(label="Allow public internet lookups", value=app.cfg["internet"]["enabled"])
+    gmail_startup = ft.Switch(label="Check new Gmail inbox messages at every launch", value=app.cfg["gmail"]["check_on_startup"])
+    gmail_client = field(c, label="Google sign-in configuration (JSON file)", value=app.cfg["gmail"]["client_file"], expand=True)
+    app.gmail_status_control = ft.Text(app.gmail_status, size=12, color=c["muted"], selectable=True)
+    def gmail_setup(_):
+        dialog = ft.AlertDialog(title=ft.Text("Connect Peter to Gmail", color=c["text"]), bgcolor=c["surface"])
+        dialog.content = ft.Container(ft.Column([
+            ft.Text("No Google desktop app is needed. Google calls Peter's browser sign-in configuration a Desktop app OAuth client.", color=c["text"], selectable=True),
+            ft.Text("1. Open Google Cloud and select or create a project. Enable the Gmail API.\n\n2. Open Google Auth Platform. Configure the app name and your email, select External, and add your Gmail address as a test user.\n\n3. Under Clients, create an OAuth client with Application type: Desktop app. Download its JSON file.\n\n4. Return here, Browse to that file, then choose Connect Gmail and approve read-only access in your browser.", color=c["muted"], selectable=True),
+            ft.Text("After sign-in, each launch checks new inbox arrivals since the last successful check. If Google expires the sign-in, Peter will ask you to reconnect.", color=c["muted"], selectable=True),
+            button("Open Google Cloud", lambda e: app.page.launch_url("https://console.cloud.google.com/"), c, ft.Icons.OPEN_IN_NEW),
+            button("Google's setup guide", lambda e: app.page.launch_url("https://developers.google.com/workspace/gmail/api/quickstart/python"), c, ft.Icons.OPEN_IN_NEW),
+        ], spacing=16, scroll=ft.ScrollMode.AUTO), width=620, height=440)
+        dialog.actions = [ft.TextButton("Close", on_click=lambda e: app.page.close(dialog))]
+        app.page.open(dialog)
     notifications = app.cfg["notifications"]
     ntfy_enabled = ft.Switch(label="Send AI answer notifications with ntfy", value=notifications["enabled"])
     ntfy_server = field(c, label="ntfy server URL", value=notifications["server_url"])
@@ -294,11 +309,14 @@ def build_settings(app):
             app.cfg.update(theme_dark=dark.value, accent_color=accent.value, view_mode=view.value, vault_path=vault_path,
                            assistant_timezone=timezone.value.strip(), notifications=ntfy)
             app.cfg.setdefault("peter", {}).update(voice_values)
+            app.cfg["internet"].update(enabled=internet.value)
+            app.cfg["gmail"].update(check_on_startup=gmail_startup.value, client_file=(gmail_client.value or "").strip().strip('"'))
             app.persist(raise_error=True)
             app.vault = Vault(Path(vault_path).expanduser() if vault_path else DATA_DIR / "notes")
             app.ensure_note()
             app.reset_assistant()
             app.reset_voice()
+            app.configure_integrations()
             app.assistant_model_selected = False
             app.render()
             app.notify("Settings saved. AI settings apply to the next launch.")
@@ -314,6 +332,14 @@ def build_settings(app):
                          speech_enabled, startup_greeting, greeting, voice_url,
                          ft.Row([voice_model, voice_id, asr_model], spacing=12), record_seconds,
                          label("Tap Peter's bubble to start recording and again to finish. Speech and transcription use your local VoiceStudio APIs. Muting speech keeps microphone input available.", c, 11)], spacing=14), c),
+        panel(ft.Column([ft.Text("Internet & Gmail", size=18, color=c["text"]), internet,
+                         label("Peter can look up current times, live weather and public webpages. Web searches use words from your current message.", c, 11),
+                         gmail_startup, ft.Row([gmail_client, button("Browse", lambda e: app.pick(gmail_client), c)], spacing=10),
+                         ft.Row([button("Connect Gmail", lambda e: app.connect_gmail(gmail_client.value), c, ft.Icons.MAIL_OUTLINE),
+                                 button("Check inbox now", lambda e: app.check_gmail(), c, ft.Icons.REFRESH),
+                                 button("Gmail setup steps", gmail_setup, c, ft.Icons.HELP_OUTLINE)], wrap=True),
+                         app.gmail_status_control,
+                         label("Sign in in your browser once. Peter reads inbox mail and saves the last successful check locally. The first check shows a recent preview; later checks show new arrivals. Gmail access is read-only.", c, 11)], spacing=14), c),
         panel(ft.Column([ft.Text("Local AI · Library & Peter", size=18, color=c["text"]), provider, lmstudio_cli, source, model, executable, python,
                          inputs["embedding_model"], inputs["server_url"], offline,
                          ft.Row([ft.Container(inputs[k], expand=True) for k in ("gpu_layers", "context_size", "max_tokens")], spacing=12),

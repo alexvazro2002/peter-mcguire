@@ -34,7 +34,7 @@ PRIVATE_NAMES = {"config.json", "config.legacy.json", "calendar.json", "assistan
 
 def private_name(name):
     name = name.casefold()
-    return (name in PRIVATE_NAMES or name == ".env" or name.startswith(".env.") or
+    return (name in PRIVATE_NAMES or name == "token.json" or name.startswith("gmail") and name.endswith(".json") or name == ".env" or name.startswith(".env.") or
             any(marker in name for marker in ("credential", "secret", "api-token")) or
             name.endswith((".bak", ".log", ".lock")) or name.startswith(".nexus-"))
 

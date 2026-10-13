@@ -19,6 +19,8 @@ DEFAULTS = {
     "notes_pinned": [], "notes_sort": "custom", "notes_last_used": {},
     "notes_graph_pos": {}, "vault_path": "", "last_note": "",
     "assistant_timezone": "Europe/London",
+    "internet": {"enabled": True},
+    "gmail": {"client_file": "", "check_on_startup": True, "initial_days": 1},
     "notifications": {"enabled": False, "server_url": "https://ntfy.sh", "topic": "", "include_answer": False},
     "peter": {
         "enabled": True, "autostart": True, "speech_enabled": True, "startup_greeting": True,
@@ -64,7 +66,7 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
             old = json.loads(candidate.read_text(encoding="utf-8-sig"))
             if not isinstance(old, dict):
                 raise ValueError("Configuration must be an object")
-            config.update({k: v for k, v in old.items() if k in DEFAULTS and k not in {"library", "notifications", "peter"}})
+            config.update({k: v for k, v in old.items() if k in DEFAULTS and k not in {"library", "notifications", "peter", "internet", "gmail"}})
             if old.get("schema_version") != 2:
                 config["accent_color"] = DEFAULTS["accent_color"]
             if isinstance(old.get("library"), dict):
@@ -73,6 +75,9 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
                 config["notifications"].update({k: v for k, v in old["notifications"].items() if k in DEFAULTS["notifications"]})
             if isinstance(old.get("peter"), dict):
                 config["peter"].update({k: v for k, v in old["peter"].items() if k in DEFAULTS["peter"]})
+            for section in ("internet", "gmail"):
+                if isinstance(old.get(section), dict):
+                    config[section].update({k: v for k, v in old[section].items() if k in DEFAULTS[section]})
         except (OSError, ValueError) as error:
             # Keep the malformed file untouched; do not silently overwrite it.
             config["config_warning"] = str(error)

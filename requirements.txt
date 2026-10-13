@@ -2,6 +2,7 @@
 flet==0.28.3
 flet-desktop==0.28.3
 requests>=2.31,<3
+urllib3>=2.2,<3
 dateparser>=1.2,<2
 tzdata>=2024
 mutagen>=1.47,<2

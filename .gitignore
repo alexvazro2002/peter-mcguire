@@ -70,6 +70,9 @@ credentials*
 secrets*
 *credential*
 *api-token*
+client_secret*.json
+gmail*.json
+token.json
 *.pem
 *.key
 *.p12

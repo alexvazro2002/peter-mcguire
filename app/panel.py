@@ -16,6 +16,8 @@ from app.storage import Vault
 from app.assistant.service import AssistantService
 from app.notifications import Notifier
 from app.voice import VoiceController
+from app.gmail import GmailController
+from app.integrations import ExternalAccess, inbox_digest
 from app.theme import button, field, palette
 from app.views.library import LibraryView
 from app.views.assistant import AssistantView
@@ -60,8 +62,11 @@ class Workspace:
                                                                    ("Weekly checklist", DATA_DIR / "tasks" / "Weekly Tasks.md")])
         self.ensure_note()
         self.model_runtime = ModelRuntime(self.cfg["library"])
+        self.gmail = GmailController(self.cfg["gmail"])
+        self.gmail_status, self.gmail_status_control = self.gmail.client.status()["message"], None
+        self.external = ExternalAccess(self.cfg["internet"], self.gmail.client)
         self.assistant = AssistantService(self.vault, self.calendar, self.model_runtime,
-                                          DATA_DIR / "assistant-conversation.json", self.cfg["assistant_timezone"])
+                                          DATA_DIR / "assistant-conversation.json", self.cfg["assistant_timezone"], external=self.external)
         self.assistant_view, self.assistant_draft = None, ""
         self.assistant_status = "Ready" if not self.assistant.warning else "Needs attention"
         self.home_view, self.memory_view = None, None
@@ -85,6 +90,8 @@ class Workspace:
         self.render()
         page.run_task(self.poll)
         page.run_task(self.start_peter)
+        if self.cfg["gmail"].get("check_on_startup", True):
+            self.gmail.startup()
         if self.cfg.get("config_warning"):
             self.notify("Configuration is invalid; the original file was preserved. Repair or rename config.json.", True)
 
@@ -385,9 +392,32 @@ class Workspace:
         self.model_runtime.close(wait=True)
         self.model_runtime = ModelRuntime(self.cfg["library"])
         self.assistant = AssistantService(self.vault, self.calendar, self.model_runtime,
-                                          DATA_DIR / "assistant-conversation.json", self.cfg["assistant_timezone"])
+                                          DATA_DIR / "assistant-conversation.json", self.cfg["assistant_timezone"], external=self.external)
         self.assistant_status = "Ready" if not self.assistant.warning else "Needs attention"
         self.peter_model_status = "Local model connects when needed"
+
+    def configure_integrations(self):
+        self.gmail.close()
+        self.gmail = GmailController(self.cfg["gmail"])
+        self.external = ExternalAccess(self.cfg["internet"], self.gmail.client)
+        self.assistant.external = self.external
+        self.gmail_status = self.gmail.client.status()["message"]
+
+    def connect_gmail(self, client_file):
+        try:
+            if self.assistant.busy:
+                raise ValueError("Wait for Peter's current answer before connecting Gmail.")
+            self.cfg["gmail"]["client_file"] = str(client_file or "").strip().strip('"')
+            self.persist(raise_error=True)
+            self.configure_integrations()
+            if not self.gmail.connect():
+                raise ValueError("A Gmail operation is already running.")
+        except (OSError, ValueError) as error:
+            self.notify(str(error), True)
+
+    def check_gmail(self):
+        if not self.gmail.check():
+            self.notify("Gmail is already checking or signing in.")
 
     def select_model(self, choice):
         if self.assistant.busy:
@@ -444,6 +474,35 @@ class Workspace:
             changed, chat_changed, console_changed, home_changed = False, False, False, False
             peter_changed = False
             assistant_changed = False
+            while True:
+                try:
+                    event = self.gmail.events.get_nowait()
+                except queue.Empty:
+                    break
+                if event["type"] in {"gmail_status", "gmail_error"}:
+                    self.gmail_status = event.get("message", "")
+                    if self.gmail_status_control and self.view == "settings":
+                        self.gmail_status_control.value = self.gmail_status
+                        self.gmail_status_control.update()
+                    if event["type"] == "gmail_error":
+                        self.notify("Gmail: " + self.gmail_status, True)
+                elif event["type"] == "gmail_summary":
+                    try:
+                        # A crash after saving but before acknowledgment replays
+                        # the same batch; retain one visible copy and retry ack.
+                        if not any(m.get("gmail_batch_id") == event["batch_id"] for m in self.assistant.messages):
+                            self.assistant.append(inbox_digest(event))
+                        self.gmail.acknowledge(event["batch_id"])
+                        assistant_changed = peter_changed = True
+                        if event["count"] and self.cfg["peter"].get("enabled", True) and self.cfg["peter"].get("speech_enabled", True) and not self.assistant.busy:
+                            intro = "Gmail connected. I've listed recent inbox messages." if event.get("first_sync") else f"You have {event['count']} new inbox messages. I've listed them in the window."
+                            self.voice.speak(intro)
+                        if self.assistant_view and self.view == "assistant":
+                            self.assistant_view.refresh_messages()
+                    except (OSError, ValueError) as error:
+                        self.notify("Gmail digest could not be saved; it will be retried next check: " + str(error), True)
+                elif event["type"] == "gmail_authorize":
+                    self.notify("Complete Gmail's read-only sign-in in your browser.")
             while True:
                 try:
                     event = self.peter_events.get_nowait()
@@ -610,6 +669,7 @@ class Workspace:
         self.library_session.stop()
         self.tool_session.stop()
         self.assistant.close()
+        self.gmail.close()
         self.voice.close()
         self.notifier.close()
         self.model_runtime.close()
