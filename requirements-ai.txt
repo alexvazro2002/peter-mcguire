@@ -1,0 +1,9 @@
+# Install only if these packages are absent from your existing AI environment.
+requests>=2.31,<3
+numpy>=1.26,<3
+faiss-cpu>=1.8,<2
+sentence-transformers>=3,<6
+PyMuPDF>=1.24,<2
+python-docx>=1.1,<2
+beautifulsoup4>=4.12,<5
+ebooklib>=0.18,<1

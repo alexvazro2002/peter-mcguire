@@ -1,0 +1,21 @@
+.metube-page{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:16px;width:100%;min-width:0}
+.metube-heading,.metube-section-heading,.metube-item-heading{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.metube-heading h1,.metube-page h2,.metube-heading p{margin:0}.metube-heading p{margin-top:5px;color:var(--muted)}
+.metube-page h2{font-size:16px}.metube-heading .toolbar{flex-shrink:0}.metube-live{font-size:12px;white-space:nowrap;color:var(--muted)}
+.metube-live.connected{color:var(--success)}.metube-live.starting{color:var(--amber)}
+.metube-service{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;border:1px solid var(--border);background:var(--raised);border-radius:10px}
+.metube-service[hidden]{display:none}.metube-service-detail{margin:0;font-size:13px;color:var(--muted)}.metube-service button{flex-shrink:0}
+.metube-form{padding:18px;display:flex;flex-direction:column;gap:14px}.metube-url{display:flex;gap:8px}.metube-url input{min-width:0;flex:1}.metube-url button{flex-shrink:0}
+.metube-options{display:grid;grid-template-columns:minmax(100px,1fr) minmax(120px,1fr) minmax(120px,1fr) auto;align-items:end;gap:12px}.metube-options select{width:100%}
+.metube-options>button{min-height:38px}.metube-message{margin:0;font-size:13px;color:var(--success);min-height:0}.metube-message:empty{display:none}.metube-message.error{color:var(--danger)}
+.metube-section{padding:0;overflow:hidden}.metube-section-heading{padding:15px 18px;border-bottom:1px solid var(--border)}.metube-section-heading input{max-width:300px;width:45%;min-width:120px}
+.metube-count{font-size:12px;font-weight:500;color:var(--muted);padding:2px 7px;background:var(--raised);border-radius:6px;margin-left:4px}
+.metube-list>.empty-state{padding:24px 18px;margin:0}.metube-item{display:flex;align-items:center;gap:18px;padding:15px 18px;border-bottom:1px solid var(--border)}.metube-item:last-child{border-bottom:0}
+.metube-item-main{flex:1;min-width:0}.metube-item-heading{justify-content:flex-start;gap:10px}.metube-item-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
+.metube-badge{font-size:11px;flex-shrink:0;color:var(--muted);background:var(--raised);padding:3px 7px;border-radius:5px}.metube-badge.failed{color:var(--danger)}.metube-badge.completed{color:var(--success)}
+.metube-item-detail{font-size:12px;line-height:1.5;margin:5px 0 0;color:var(--muted);overflow-wrap:anywhere}.metube-item-error{font-size:12px;line-height:1.5;color:var(--danger);margin:7px 0 0;overflow-wrap:anywhere}
+.metube-item progress{display:block;margin-top:10px;width:100%;height:5px;accent-color:var(--accent);border:0;border-radius:8px;overflow:hidden;background:var(--raised)}.metube-item progress[hidden]{display:none}
+.metube-item progress::-webkit-progress-bar{background:var(--raised)}.metube-item progress::-webkit-progress-value{background:var(--accent)}.metube-item progress::-moz-progress-bar{background:var(--accent)}
+.metube-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;max-width:260px}.metube-actions button{font-size:12px;padding:7px 10px;white-space:nowrap}.metube-section>button{margin:12px 18px}
+@media(max-width:760px){.metube-options{grid-template-columns:1fr 1fr}.metube-heading{align-items:flex-start}.metube-heading .toolbar{flex-direction:column;gap:8px}.metube-item{align-items:flex-start;gap:12px;flex-direction:column}.metube-item-main{width:100%}.metube-actions{max-width:none;justify-content:flex-start}.metube-heading p{font-size:13px}.metube-service{align-items:flex-start;flex-direction:column}}
+@media(max-width:420px){.metube-form{padding:14px}.metube-section-heading,.metube-item{padding:12px 14px}.metube-section-heading{align-items:flex-start;flex-direction:column}.metube-section-heading input{width:100%;max-width:none}.metube-item-heading{align-items:flex-start;flex-direction:column;gap:5px}.metube-item-title{max-width:100%}}

@@ -1,0 +1,8 @@
+{
+  "name": "peter-thinking-orbs-assets",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"frames": "node render.mjs"},
+  "dependencies": {"thinking-orbs": "0.3.1", "@napi-rs/canvas": "0.1.100"}
+}

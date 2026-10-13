@@ -1,0 +1,195 @@
+# Nexus Desk Assistant
+
+Version 2.3 adds verified edit completion, read-only project tools, a launch model
+chooser and ntfy notifications. See [UPDATE_2_3.md](UPDATE_2_3.md) for current setup,
+speed recommendations and model compatibility. The remaining architecture below
+continues to apply.
+
+## Using it
+
+Open **Assistant** in the navigation rail and send a message. It connects to the
+same local model configured for AI Library, without needing a document index or
+an active Library session. There is no separate Assistant model or cloud provider.
+Existing defaults point to the Qwen3.5-4B GGUF and local llama.cpp/LM Studio server.
+An already running endpoint is reused, just as it is for Library.
+
+Settings now includes an Assistant timezone, defaulting to `Europe/London`.
+Use the existing **Context size** and **Answer token budget** settings for both
+sections. The default 16,384-token context is recommended for tool schemas and
+evidence. Increase the output budget if your model spends its response on reasoning
+instead of returning a complete JSON response.
+
+Questions are answered from live app data. Requested modifications are performed
+without an extra approval screen; genuine ambiguity prompts a clarification.
+Progress shows the current tool/status. Completed changes are listed accurately
+from the tools' results. Source buttons open notes or the corresponding day agenda.
+The undo icon on a response restores the entire operation, not just its last edit.
+The history icon also exposes operations from previous app sessions. Undo itself
+creates a recoverable operation, so undoing that operation restores the changes.
+New conversation clears chat, not app data or change history.
+
+## Architecture
+
+- `library/chat.py`: common HTTP chat transport, used by Library and Assistant.
+- `library/runtime.py`: one app-owned local model process shared by both sections.
+- `app/assistant/engine.py`: bounded multi-round model/tool loop with JSON responses.
+- `app/assistant/tools.py`: validated, allowlisted workspace actions and searches.
+- `app/assistant/transactions.py`: staged changes, conflict checks, journal, rollback,
+  crash recovery and undo.
+- `app/assistant/lists.py`: Markdown/plain-list editing while preserving surrounding
+  prose, nested items and headings.
+- `app/assistant/dates.py`: dateparser plus explicit relative-weekday semantics.
+- `app/assistant/service.py`: background work, cancellation, event queue and local chat.
+- `app/views/assistant.py`: the Flet chat view, using the existing palette/controls.
+
+The model chooses tools over multiple rounds; there is no application parser
+matching the example's movie names or message wording. Tools/results are described
+in the model's system prompt. A JSON envelope works even on local servers without
+native function calling. Native tool-call responses are accepted too. HTTP JSON
+mode is used when supported, with prompt-based JSON fallback for older endpoints.
+Every argument is validated before its handler runs. Unknown tools, unknown
+arguments, invalid dates and paths disguised as note titles are rejected.
+
+Notes and lists remain in the existing `Vault` as Markdown. Tasks and day notes
+remain in the existing `CalendarStore` and `calendar.json`; IDs, imported tasks,
+links and other existing fields are retained. There is no second note/task/list
+database, embedding requirement, file-execution tool or unrestricted filesystem API.
+Calendar changes use its validation and persistence API, with a single final write
+for the whole staged calendar rather than repeatedly saving individual entries.
+CLI Library startup still manages its own model when not launched by the app.
+
+## Tools
+
+| Area | Tools |
+| --- | --- |
+| Discovery | `workspace_overview`, `resolve_date` |
+| Project (read-only) | `list_repository`, `search_repository`, `read_repository_file` |
+| Notes | `search_notes`, `read_note`, `create_note`, `edit_note`, `delete_note` |
+| Calendar | `search_calendar`, `read_calendar_entry`, `create_calendar_note`, `update_calendar_entry`, `delete_calendar_entry` |
+| Tasks | `search_tasks`, `create_task`, `edit_task`, `complete_task`, `delete_task` |
+| Lists | `find_list`, `read_list`, `add_list_item`, `remove_list_item`, `move_list_item`, `transfer_list_item` |
+| History | `search_history`, `count_history` |
+
+An edit can append/prepend, replace one exact passage, or explicitly replace all
+contents. List insertions support alphabetical/top/bottom ordering; reordering
+supports top/bottom/zero-based positions. Alphabetical sorting ignores leading
+articles and case. Very close unique spelling matches can reuse an existing title;
+competing matches require clarification. A missing removal is a no-op, and an
+existing item/task is not duplicated. Notes with multiple list headings require
+the model to select the relevant section. Unclear plain-text layouts should be
+handled through exact note edits rather than blindly reordering prose.
+
+## Example
+
+For a message anchored to **1 October 2026**, in the configured local timezone:
+
+1. `resolve_date` establishes October 1, upcoming Sunday **October 4**, and
+   yesterday **September 30**.
+2. The model searches and reads the existing watchlist and completed-film list.
+3. It stages a late-work day note for October 1 and `Watch Interstellar` for October 4.
+4. It inserts Interstellar alphabetically into the watchlist.
+5. It transfers the matching canonical film title to Films I've seen, removing
+   it from the watchlist if present and retaining its September 30 occurrence date.
+6. A final model response commits all five changes as one operation. A model,
+   validation, context-budget or storage error before completion saves none of the
+   staged changes. If the model asks for clarification, pending changes are discarded.
+
+The five actual changes, including no-op differences when an item already exists,
+are reported by the application. This workflow was tested with scripted model
+responses through both the engine and the actual UI/HTTP transport. Live Qwen
+interpretation still needs to be checked with your existing model files.
+
+## Dates And Counting
+
+An explicit date in a message anchors its relative dates; otherwise the Assistant
+receives the current local timestamp. `this Sunday` is the next Sunday including
+today when already Sunday. `last Friday` is strictly before the anchor. Numeric
+dates such as `01/10` require clarification rather than a US/UK guess. Dates without
+a year use the anchor year, and ordinary relative dates use dateparser.
+
+Completed list activities can carry a small hidden Markdown comment, for example:
+
+```markdown
+- The Peanut Butter Falcon <!-- nexus-assistant: {"date":"2026-09-30","activity":"watch"} -->
+```
+
+This stays in the existing Markdown file and is hidden by normal Markdown rendering.
+Calendar observations can hold `metadata` with normalized activity, subjects,
+people and duration. Repeated activities should create a new dated calendar record
+instead of duplicating an item in a completed-items list.
+
+Historical tools scan all live records, with pagination for evidence and full-range
+counts instead of counting only top search matches. Planned tasks are excluded from
+activity history by default; `include_tasks` permits intentional task statistics.
+Matching list/calendar references to the same dated activity are deduplicated.
+Distinct calendar occurrences, including repeated events in one day, remain countable.
+ISO dates in Markdown lines or dated headings provide additional historical evidence.
+
+**An undated note cannot prove when something happened.** The tools report undated
+matches separately. Activity filters count explicitly classified activities only;
+the model is instructed to review older free-text data separately and describe gaps.
+File modification times are never used as event dates. Free-text search is ranked
+lexical search; the model can issue additional searches for alternate words. Deleted
+records are recoverable through undo/trash, but are not included in live-data counts.
+
+## Safety And Recovery
+
+Each message gets an in-memory view of existing storage. Writes stay staged while
+read tools see earlier staged changes. Immediately before saving, the operation
+checks the note catalogue, all read notes and calendar against their original
+contents. Concurrent external edits cause a conflict rather than an overwrite.
+The Notes editor also detects stale buffers after Assistant/external edits.
+
+The write-ahead journal is stored in the active vault's `.history/assistant`.
+It contains before/after images and operation status. Each file is written through
+existing atomic storage helpers. A normal failure rolls back already written files;
+an interrupted operation is recovered at Assistant startup. Deleted notes also use
+the vault's existing `.trash`. Keep these local backups if you need to undo changes.
+They can contain sensitive note contents, like the app's other existing backups.
+
+Undo checks that affected files still match the operation's result. It will not
+overwrite a later manual edit. Undo later conflicting operations first, or restore
+a before-image manually. A crash-recovery conflict preserves the journal and blocks
+new Assistant requests pending repair. Invalid conversation JSON is also preserved
+instead of silently overwritten.
+
+This is an optimistic, journaled transaction for a local single-app workflow, not
+a database-wide lock across external editors. Other processes can briefly observe
+intermediate writes. Avoid editing the same files during a commit/recovery. Cancel
+discards staging at the next safe point; an already completed commit is undone with
+Undo instead. Closing the app cancels outstanding Assistant work and stops only its
+owned model server; externally started servers are not killed.
+
+Chat is persisted locally in `assistant-conversation.json` (last 200 messages, last
+8 used as model conversation context). The file is ignored by git and packaging.
+App data stays accessible from any view, while progress/results are collected by
+the existing UI poll loop. No controls are updated from model/background threads.
+
+## Upgrade
+
+Do not extract over your personal data without a backup. Extract the ZIP to a new
+folder, install requirements, and either point Notes vault to your existing vault
+or copy your existing `notes`, `tasks`, `calendar.json`, and `config.json` into that
+folder. Preserve `.history` and `.trash` when moving your vault. Alternatively set
+`NEXUS_DATA_DIR` to your existing data directory. Models remain at their current paths.
+Bundled notes are existing project templates, not replacements for your own data.
+Rerun `INSTALL.bat` (or install requirements.txt into your UI environment) for the
+new dateparser/tzdata dependencies. No model download is required.
+
+## Limits And Validation
+
+Tool planning, inference and semantic intent resolution depend on your local model;
+the application cannot guarantee that a small model will interpret every request.
+It validates tool arguments and protects storage, but does not prove a model's
+semantic plan matches every nuance of the user's intent. Review the change summary
+and use undo for a mistaken interpretation. Retrieved data is explicitly untrusted
+in the prompt, but prompt-injection resistance is not a formal security guarantee.
+
+Requests are bounded to 8,000 characters, 20 rounds and 64 total tool calls, with
+8 calls per round. A context-size guard rejects overlarge conversations/results
+rather than dropping evidence silently. Split very broad requests or increase the
+model context in Settings. Large note replacements require smaller exact edits.
+Calendar recurrence, timed notifications, attachment OCR and automatic bulk
+classification of old undated notes are not added by this feature.
+
+See `VALIDATION.md` for tests and the screenshots in `previews/assistant-*.png`.

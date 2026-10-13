@@ -1,0 +1,4 @@
+# Optional desktop automation only. Fedora requires python3-devel and X11 session.
+# keyboard's Linux backend requires root and is intentionally replaced with pynput.
+pyautogui>=0.9.54,<1
+pynput>=1.7,<2

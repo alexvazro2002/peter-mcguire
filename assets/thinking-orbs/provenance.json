@@ -1,0 +1,13 @@
+{
+  "package": "thinking-orbs",
+  "version": "0.3.1",
+  "source": "https://github.com/Jakubantalik/thinking-orbs",
+  "commit": "de85557ca220332586d070d8788c0e1d6e877a0d",
+  "preset": 64,
+  "pixels": 192,
+  "fps": 24,
+  "frames": 144,
+  "engine": "thinking-orbs/engine",
+  "loop": "half-second crossfade to first upstream frame",
+  "license": "MIT"
+}

@@ -1,0 +1,21 @@
+PETER (MCGUIRE) — NEXUSDESK ON FEDORA
+
+Double-click Peter.desktop on your Desktop, choose Peter (McGuire) in your
+application menu, or run ./start-linux.sh from this directory.
+
+Peter starts the installed VoiceStudio service when needed and connects to your
+existing Gemma model in LM Studio. Click the animated bubble or Speak to Peter,
+then click again to finish. Ctrl+Space does the same while Peter has focus.
+Type into the Home field or open Peter's conversation for source links and undo.
+
+Notes starts empty. Existing calendar/tasks, memories, tools and AI Library use
+the original NexusDesk stores. Review actual saved-change summaries and use undo
+when a local model misunderstands a request.
+
+For a fresh checkout: ./install-linux.sh, then ./install-voice.sh.
+Read README.md, LINUX_PETER.md and PETER_VALIDATION.md for setup, verified checks,
+optional AI Library dependencies, and remaining hardware/Wayland limitations.
+The old Windows documentation is preserved in docs/LEGACY_WINDOWS.md.
+
+Personal data, credentials, runtimes, weights and backups stay local and are
+excluded from source packages and Git. Back up wanted personal data separately.
