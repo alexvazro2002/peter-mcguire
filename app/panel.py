@@ -648,7 +648,7 @@ class Workspace:
                     message = dict(role="assistant", text=event.get("text", "**Could not complete the request:** " + event.get("message", "")))
                     if event["type"] == "answer":
                         message.update({k: event.get(k) for k in ("sources", "changes", "operation_id")})
-                        message.update({k: event[k] for k in ("email_offer", "email_handled", "email_content", "untrusted", "open_offer", "open_choices") if k in event})
+                        message.update({k: event[k] for k in ("email_offer", "email_handled", "email_content", "untrusted", "open_offer", "open_choices", "evidence") if k in event})
                         if event.get('gmail_check_batch'):
                             try:
                                 self.email_routine_started, self.email_prompt_pending = True, True
@@ -662,6 +662,8 @@ class Workspace:
                                         + (' ' + event['gmail_latest_text'] if event.get('gmail_latest_text') else ''))
                             except (OSError, ValueError, GmailError) as error:
                                 self.notify('Inbox was checked but its headers could not be saved: ' + str(error), True)
+                    else:
+                        message['error'] = True
                     answer_saved = True
                     try:
                         self.assistant.append(message)

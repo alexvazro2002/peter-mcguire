@@ -89,7 +89,8 @@ def test_quick_sequential_requests_bound_large_old_history(workspace):
         engine = Engine(*workspace, model, {"context_size": 8192, "max_tokens": 1800})
         result = engine.run("Hello again.", conversation)
         sent = model.messages[0]
-        assert sum(len(m["content"]) for m in sent) < 13000
+        from app.assistant.engine import input_budget, prompt_bytes
+        assert prompt_bytes(sent) <= input_budget(engine.settings, 512)
         assert sent[0]["role"] == "system" and sent[-1]["content"] == "Hello again."
         assert "describe_tools" in sent[0]["content"]
         assert '"mode"' not in sent[0]["content"]  # Detailed edit schemas are fetched only when needed.
@@ -145,7 +146,7 @@ def test_truncated_json_retry_keeps_staged_writes_until_valid_final(workspace):
             return {"content": '{"answer":"","apply_changes":true}'}
     client = TruncatedClient()
     result = Engine(*workspace, client, {"context_size": 8192, "max_tokens": 1800}).run("Create Retry check.")
-    assert client.budgets == [384, 768, 1536]
+    assert client.budgets == [512, 768, 1536]
     assert workspace[0].read("Retry check") == "Verified."
     assert len(workspace[2].recent()) == 1
     assert any('"changed": true' in m["content"] for m in client.messages[-1])

@@ -129,3 +129,81 @@ def test_ambiguous_opening_accepts_the_next_turns_numbered_choice(tmp_path):
     opener.respond('The second one.', history)
     assert opened == [chosen]
     assert opener.respond('second', [*history, dict(role='assistant', text='Another topic.')]) is None
+
+
+def two_mails():
+    source, external = mail()
+    second = dict(source, id='def456', title='Second message', url=source['url'].replace('abc123', 'def456'))
+    return [source, second], external
+
+
+@pytest.mark.parametrize('phrase', ['Open both of them.', 'Can you open the for me?',
+    'No need to read them, just open them on the browser.'])
+def test_explicit_plural_opening_uses_only_verified_references(tmp_path, phrase):
+    opener, _, opened = setup(tmp_path)
+    sources, external = two_mails()
+    result = opener.respond(phrase, [dict(role='assistant', text='Two messages.', sources=sources)], external)
+    assert opened == sources and result['text'] == 'Opened both in Gmail.'
+
+
+def test_both_is_a_continuation_of_opening_not_a_new_read_instruction(tmp_path):
+    opener, _, opened = setup(tmp_path)
+    sources, external = two_mails()
+    history = [dict(role='user', text='Can you open them?'),
+               dict(role='assistant', text='Which ones?', sources=sources, open_choices=sources)]
+    assert opener.respond('both of the ones you just said.', history, external)['sources'] == sources
+    assert len(opened) == 2
+    assert opener.respond('both of the ones you just said.', [dict(role='user', text='Read those messages.'),
+        dict(role='assistant', text='Which ones?', sources=sources)], external) is None
+
+
+def test_last_two_from_sender_searches_and_opens_actual_returned_messages(tmp_path):
+    opener, _, opened = setup(tmp_path)
+    sources, external = two_mails()
+    searches = []
+    def search(query, **kwargs):
+        searches.append((query, kwargs))
+        return dict(account='person@example.test', messages=[dict(source, subject=source['title']) for source in sources])
+    external.gmail.search = search
+    result = opener.respond('Peter, can you open the last two emails from Recruiter?', [], external)
+    assert opened == sources and result['text'] == 'Opened both in Gmail.'
+    assert 'from:"Recruiter"' in searches[0][0] and searches[0][1]['limit'] == 2
+
+
+def test_old_fabricated_prose_cannot_supply_browser_links(tmp_path):
+    opener, _, opened = setup(tmp_path)
+    _, external = mail()
+    result = opener.respond('Open them on the browser.', [dict(role='assistant',
+        text='Two messages: https://mail.google.com/mail/u/0/#inbox/msg_01 and msg_02.')], external)
+    assert not opened and not result['sources'] and 'Which' in result['text']
+
+
+def test_close_request_is_honest_about_missing_browser_control(tmp_path):
+    opener, _, opened = setup(tmp_path)
+    result = opener.respond('close it.', [])
+    assert "can't close browser tabs" in result['text'] and not opened
+
+
+def test_invalid_second_reference_prevents_opening_the_first(tmp_path):
+    opener, _, opened = setup(tmp_path)
+    sources, external = two_mails()
+    sources[1]['id'] = 'mismatched'
+    with pytest.raises(ValueError):
+        opener.respond('Open both.', [dict(role='assistant', sources=sources)], external)
+    assert not opened
+
+
+def test_opening_can_recover_a_user_requested_search_after_unsupported_old_claim(tmp_path):
+    from app.integrations import ExternalAccess
+    opener, _, opened = setup(tmp_path)
+    sources, external = two_mails()
+    calls = []
+    def search(query, **kwargs):
+        calls.append(query)
+        return dict(account='person@example.test', messages=[dict(source, subject=source['title']) for source in sources])
+    external.gmail.search = search
+    history = [dict(role='user', text='Find emails from Recruiter yesterday around 11 pm.'),
+               dict(role='assistant', text='I found two emails called msg_01 and msg_02.', sources=[])]
+    result = opener.respond('Open both of them.', history, ExternalAccess(gmail=external.gmail))
+    assert opened == sources and calls and 'from:"Recruiter"' in calls[0]
+    assert 'msg_01' not in result['text'] and result['evidence']['tools'] == ['open_items']

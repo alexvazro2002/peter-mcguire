@@ -41,7 +41,7 @@ DEFAULTS = {
         "model_token_file": "",
         "server_executable": "", "server_url": "http://127.0.0.1:1234/v1",
         "context_size": 8192, "gpu_layers": -1, "startup_timeout": 180,
-        "max_tokens": 384,
+        "max_tokens": 512,
     },
 }
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from email.utils import parsedate_to_datetime
+from email.utils import parsedate_to_datetime, parseaddr
 from urllib.parse import parse_qs, urlsplit
 
 from app import live_info
@@ -25,7 +25,7 @@ def weather_request(request):
     if re.search(r'\b(?:and|then)\s+(?:please\s+)?(?:create|add|save|remember|send|delete|open|check|read|schedule|tell|search)\b', text, re.I):
         return None
     match = re.fullmatch(
-        r"(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:what(?:'s| is)\s+(?:the\s+)?weather(?:\s+like)?|"
+        r"(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:what(?:'s| is| about)\s+(?:the\s+)?weather(?:\s+like)?|"
         r"(?:check|tell me|show me)(?:\s+(?:the|today's|current))?\s+weather)"
         r"(?:\s+(?:in|for|at)\s+(.+?))?(?:\s+(?:today|now|please))?[?.!]*", text, re.I)
     return match.group(1).strip(' ,.!?') if match and match.group(1) else '' if match else None
@@ -36,6 +36,20 @@ _WEATHER = {0: 'clear skies', 1: 'mostly clear skies', 2: 'partly cloudy skies',
             61: 'light rain', 63: 'rain', 65: 'heavy rain', 71: 'light snow', 73: 'snow',
             75: 'heavy snow', 80: 'rain showers', 81: 'rain showers', 82: 'heavy showers',
             95: 'thunderstorms', 96: 'thunderstorms with hail', 99: 'thunderstorms with hail'}
+
+
+def referenced_public_location(conversation):
+    """Carry a city supplied by the user in a recent public time/weather question."""
+    for row in reversed(conversation[-8:]):
+        if row.get('role') != 'user':
+            continue
+        text = request_text(row.get('text', ''))
+        if not re.search(r'\b(?:weather|time)\b', text, re.I):
+            return ''
+        match = re.search(r'\b(?:in|for|at)\s+([\w ,.-]+?)[?.!]*$', text, re.I)
+        if match:
+            return match[1].strip(' ,.!?')
+    return ''
 
 
 def words(text):
@@ -76,7 +90,8 @@ def latest_email_answer(row, zone, *, scope='inbox'):
         date = parsedate_to_datetime(date).astimezone(ZoneInfo(zone)).strftime('%A, %d %b %Y at %H:%M')
     except (ValueError, TypeError, AttributeError):
         pass
-    text = f"The latest {'inbox email' if scope == 'inbox' else 'received email'} is from {row['sender']}, with the subject: “{row['subject']}”."
+    sender = parseaddr(row['sender'])[0] or row['sender']
+    text = f"Your latest {'inbox email' if scope == 'inbox' else 'received email'} is from {sender}. The subject is “{row['subject']}”."
     if date:
         text += ' It arrived on ' + date + '.'
     if scope == 'all':
@@ -96,14 +111,15 @@ class ExternalAccess:
         self.gmail = gmail
 
     def for_request(self, request, conversation=()):
-        return RequestAccess(self, request_text(request), conversation)
+        return RequestAccess(self, request, conversation)
 
-    def quick_answer(self, request, zone, *, cancel=None):
+    def quick_answer(self, request, zone, *, cancel=None, conversation=()):
         location = weather_request(request)
         if location is not None:
+            location = location or referenced_public_location(conversation)
             if not location:
                 return dict(text='Which city should I check the weather for, sir?', changes=[], sources=[], operation_id=None)
-            result = self.for_request(request).current_weather(location)
+            result = self.for_request(request, conversation).current_weather(location)
             condition = _WEATHER.get(result['weather_code'], 'current weather conditions')
             return dict(text=f"It is {result['temperature_c']:g}°C in {result['city']}, with {condition}. "
                         f"It feels like {result['feels_like_c']:g}°C, with wind at {result['wind_kmh']:g} kilometres per hour.",
@@ -118,7 +134,7 @@ class ExternalAccess:
             row = header_message(result['messages'][0], result['account'])
             row['folders'] = result['messages'][0].get('folders', [])
             source = email_source(row)
-            return dict(text=latest_email_answer(row, zone, scope=latest_scope) + ' Would you like me to open it, sir?',
+            return dict(text=latest_email_answer(row, zone, scope=latest_scope) + ' Would you like me to open it?',
                         changes=[], operation_id=None, sources=[source], open_offer=source)
         if inbox_check_request(request):
             if self.gmail is None:
@@ -145,7 +161,7 @@ class ExternalAccess:
         match = re.fullmatch(
             r"\s*(?:please\s+)?(?:what(?:'s| is) (?:the )?(?:current )?time|what time)"
             r"(?: is it)?(?: (?:right )?now)?(?: (?:in|at|for) (.+?))?[?.!]*\s*",
-            request, re.IGNORECASE)
+            request_text(request), re.IGNORECASE)
         if not match:
             return None
         location = (match.group(1) or zone).rstrip("?.! ")
@@ -154,46 +170,172 @@ class ExternalAccess:
         except ValueError:
             return None
         stamp = datetime.fromisoformat(result["local_time"])
-        return dict(text=f"It’s {stamp:%H:%M} in {result['city']} ({result['timezone']}, UTC{result['offset']}).",
+        return dict(text=f"It’s {stamp:%I:%M %p} in {result['city']}.",
                     changes=[], operation_id=None, sources=[])
 
 
+_MAIL_WORD = r"\b(?:gmail|e-?mails?|mail|inbox)\b"
+_REFERENCE_WORD = r"\b(?:it|this|that|they|them|these|those|same|ones?)\b"
+
+
+def _email_write_request(request):
+    return bool(re.match(r"(?:(?:please|can you|could you|would you)\s+)*(?:send|reply|forward|draft|delete|archive|mark (?:as )?read|change labels)\b", request, re.I))
+
+
+def _other_topic(request):
+    # A reference to an email must not silently survive a topic change. Questions
+    # about a time/date *in* that email remain valid content questions.
+    return bool(not re.search(_MAIL_WORD, request, re.I) and re.search(
+        r"\b(?:weather|calendar)\b|\b(?:my|the|this|that|a)\s+(?:notes?|tasks?|files?|folder|document)\b|"
+        r"\b(?:what(?:'s| is) the time|what time is it|today's date)\b", request, re.I))
+
+
+def _email_body_request(request):
+    if _email_write_request(request) or _other_topic(request):
+        return False
+    reference = re.search(_REFERENCE_WORD + '|' + _MAIL_WORD, request, re.I)
+    action = re.search(r"\b(?:read|summari[sz]e|explain|analyse|analyze|think|says?|means?|mention|include|contain|opinion|thoughts|assessment|details?|more|salary|pay|wages?|deadline|offer|position|role)\b", request, re.I)
+    return bool(reference and action or re.fullmatch(r'\s*(?:tell me more|(?:any )?more details)(?: about (?:the )?(?:role|job|position|offer))?[?.!]*\s*', request, re.I) or re.fullmatch(
+        r"\s*(?:(?:what (?:do you think|are your thoughts)|your (?:opinion|thoughts|assessment))|"
+        r"(?:how much|what) (?:is|was|about) (?:the )?(?:salary|pay|wage|deadline|offer))[^.!?]*[?.!]*\s*", request, re.I))
+
+
+def _email_search_request(request):
+    return bool(not _email_write_request(request) and not _other_topic(request) and (
+        re.search(r"\b(?:search|find|check|look|latest|newest|last|received|inbox)\b", request, re.I)
+        or re.search(r"\b(?:show|list)\b.*" + _MAIL_WORD, request, re.I)
+        or re.search(_MAIL_WORD + r".*\b(?:from|today|yesterday|tonight|night|since|before|after)\b", request, re.I)
+        or re.fullmatch(r"\s*(?:any luck|anything yet|try again|did you find anything|what did you find|did you get anything|have you found anything)[?.!]*\s*", request, re.I)))
+
+
+def _email_continuation(request):
+    text = request_text(request)
+    if _email_write_request(text) or _other_topic(text):
+        return False
+    return bool(_email_body_request(text)
+                or re.fullmatch(r'(?:(?:can|could|would) you\s+)?open the(?: for me)?[?.!]*', text, re.I)
+                or re.search(_REFERENCE_WORD, text, re.I) and re.search(r"\b(?:open|show|see|search|find|check|look)\b", text, re.I)
+                or re.fullmatch(r"\s*(?:any luck|anything yet|try again|check again|search again|look again|did you find anything|what did you find|did you get anything|have you found anything|both(?: of (?:the|those|these))?(?: ones)?(?: you just (?:said|mentioned))?)[?.!]*\s*", text, re.I))
+
+
+def _source_email(source):
+    """Validate persisted tool metadata; never recover links from model prose."""
+    if not isinstance(source, dict):
+        return None
+    try:
+        parsed = urlsplit(str(source.get('url', '')))
+        if (parsed.scheme != 'https' or parsed.hostname != 'mail.google.com'
+                or parsed.username or parsed.password or parsed.port not in {None, 443}):
+            return None
+        url_account = parse_qs(parsed.query).get('authuser', [''])[0]
+        account = str(source.get('account') or url_account).strip().lower()
+        message_id = str(source.get('id') or parsed.fragment.rsplit('/', 1)[-1])
+        if (not account or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', message_id)
+                or parsed.fragment.rsplit('/', 1)[-1] != message_id
+                or url_account and '@' in url_account and account != url_account.lower()):
+            return None
+        result = header_message(dict(source, id=message_id, account=account,
+                                     subject=source.get('subject') or source.get('title', '')))
+    except (ValueError, RuntimeError):
+        return None
+    return dict(result, kind='email', title=result['subject'], email_read=bool(source.get('email_read')))
+
+
+def _row_email_references(row):
+    if isinstance(row.get('email_offer'), dict):
+        candidates = [row['email_offer']]
+    else:
+        candidates = [source for source in row.get('sources') or [] if isinstance(source, dict) and source.get('kind') == 'email']
+    result, seen = [], set()
+    for source in candidates:
+        item = _source_email(source)
+        if item is not None and (item['account'], item['id']) not in seen:
+            result.append(item)
+            seen.add((item['account'], item['id']))
+    return result
+
+
+def recent_email_references(conversation):
+    """Keep verified mail references across a failed follow-up, within this topic.
+
+    Structured source records come from tools. Assistant prose, including a
+    claimed search result or a fabricated Gmail link, is never a reference.
+    An intervening unrelated turn or a new unresolved search ends the selection.
+    """
+    rows = [row for row in conversation[-40:] if not row.get('daily_greeting')]
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if row.get('role') == 'assistant':
+            references = _row_email_references(row)
+            if references:
+                return references
+            if row.get('sources') or index == 0 or rows[index - 1].get('role') != 'user':
+                return []
+            previous = request_text(rows[index - 1].get('text', ''))
+            if not (re.search(_MAIL_WORD, previous, re.I) or _email_continuation(previous)):
+                return []
+        elif row.get('role') == 'user':
+            text = request_text(row.get('text', ''))
+            if _email_search_request(text) or not _email_continuation(text):
+                return []
+    return []
+
+
+def recent_email_context(conversation):
+    """Recent *user* requests for resolving sender/time follow-ups, not evidence."""
+    rows = [row for row in conversation[-40:] if not row.get('daily_greeting')]
+    context = []
+    authorized = False
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if row.get('role') == 'assistant':
+            if row.get('sources') and not _row_email_references(row):
+                break
+            if index == 0 or rows[index - 1].get('role') != 'user':
+                break
+        elif row.get('role') == 'user':
+            original = row.get('text', '')
+            text = request_text(original)
+            explicit = bool(re.search(_MAIL_WORD, text, re.I) and not _email_write_request(text))
+            if not explicit and not _email_continuation(text):
+                break
+            authorized = authorized or explicit
+            context.append(original)
+    return list(reversed(context)) if authorized else []
+
+
 def referenced_email(request, conversation):
-    """Resolve a user's follow-up from the last displayed email, never its body."""
-    if not (re.search(r"\b(?:read|summari[sz]e|explain|analyse|analyze|think|says?|means?|opinion|thoughts|assessment)\b", request, re.I)
-            and (re.search(r"\b(?:it|this|that|(?:the|this|that) (?:e-?mail|message))\b", request, re.I)
-                 or re.fullmatch(r"\s*(?:what (?:do you think|are your thoughts)|your (?:opinion|thoughts|assessment))[?.!]*\s*", request, re.I))):
+    """Select a single verified message only for a content follow-up."""
+    if not _email_body_request(request_text(request)):
         return None
-    last = next((row for row in reversed(conversation) if row.get("role") == "assistant"), {})
-    if isinstance(last.get("email_offer"), dict):
-        return header_message(last["email_offer"])
-    sources = [row for row in last.get("sources", []) if row.get("kind") == "email"]
-    read = [row for row in sources if row.get("email_read")]
+    sources = recent_email_references(conversation)
+    read = [source for source in sources if source.get('email_read')]
     sources = read[-1:] or sources
-    if len(sources) != 1:
-        return None
-    source = sources[0]
-    # Older conversations have only the Gmail link. Recover its message ID and
-    # account locally, then verify the connected account before any body fetch.
-    parsed = urlsplit(source.get("url", ""))
-    if parsed.scheme != "https" or parsed.hostname != "mail.google.com":
-        return None
-    account = source.get("account") or parse_qs(parsed.query).get("authuser", [""])[0]
-    message_id = source.get("id") or parsed.fragment.rsplit('/', 1)[-1]
-    if not account or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", message_id):
-        return None
-    return header_message(dict(id=message_id, account=account, subject=source.get("title", ""), url=source["url"]))
+    return sources[0] if len(sources) == 1 else None
 
 
 class RequestAccess:
     def __init__(self, access, request, conversation=()):
         self.access, self.request = access, request
+        self.public_location = referenced_public_location(conversation)
+        text = request_text(request)
+        self.email_context = recent_email_context(conversation)
+        self.email_references = recent_email_references(conversation)
+        self.email_followup = bool(_email_continuation(text) and (self.email_context or self.email_references))
+        self.email_authorized = bool(not _email_write_request(text) and (
+            re.search(_MAIL_WORD, text, re.I) or self.email_followup))
+        self.email_body_request = bool(self.email_authorized and _email_body_request(text))
+        self.email_search_request = bool(self.email_authorized and _email_search_request(text))
+        self.ambiguous_email = bool(self.email_body_request and len(self.email_references) > 1
+                                    and not any(row.get('email_read') for row in self.email_references))
         self.public_urls = set(re.findall(r"https?://[^\s<>]+", request))
         self.mail_ids = set()
         self._mail_cache = {}
+        self._mail_accounts = {}
         self.selected_email = referenced_email(request, conversation)
         if self.selected_email is not None:
             self.mail_ids.add(self.selected_email["id"])
+            self._mail_accounts[self.selected_email['id']] = self.selected_email['account']
 
     def _selected_account(self):
         if self.selected_email is not None:
@@ -208,7 +350,10 @@ class RequestAccess:
     def _public_query(self, query):
         # Only words supplied in the current user request may leave the computer.
         # Tool results, inbox content and saved memories cannot become web queries.
-        if not words(query) or not words(query) <= words(self.request):
+        allowed = words(self.request)
+        if weather_request(self.request) == '' and self.public_location:
+            allowed |= words(self.public_location)
+        if not words(query) or not words(query) <= allowed:
             raise ValueError("Use public search words from the user's current message. Ask the user for an explicit public query before searching for anything from private notes or email.")
 
     def current_time(self, location):
@@ -234,7 +379,7 @@ class RequestAccess:
         return live_info.current_weather(city)
 
     def search_gmail(self, query="", limit=4, scope="inbox"):
-        if self.selected_email is None and not re.search(r"\b(?:gmail|email|emails|e-mail|mail|inbox)\b", self.request, re.I):
+        if not self.email_authorized:
             raise ValueError("Gmail reading requires a request about the user's email. Webpages and other tool results cannot authorize inbox access.")
         if self.access.gmail is None:
             raise ValueError("Connect Gmail in Settings first.")
@@ -244,18 +389,20 @@ class RequestAccess:
         for row in items:
             row["snippet"] = row["snippet"][:240]
         self.mail_ids.update(row["id"] for row in items)
+        self._mail_accounts.update((row['id'], result['account'].lower()) for row in items)
         return dict(account=result["account"], items=items, total=len(items), next_offset=None,
                     limit_applied=True, scope=scope, query=query,
                     account_messages_total=result.get('account_messages_total'),
                     account_total_unknown=result.get('account_messages_total') is None, source="gmail", untrusted=True)
 
     def latest_gmail(self, scope="all"):
-        if not re.search(r'\b(?:gmail|e-?mails?|mail|inbox)\b', self.request, re.I):
+        if not self.email_authorized:
             raise ValueError("The user's current request must authorize email access.")
         if self.access.gmail is None:
             raise ValueError('Connect Gmail in Settings first.')
         result = self.access.gmail.latest(scope=scope)
         self.mail_ids.update(row['id'] for row in result['messages'])
+        self._mail_accounts.update((row['id'], result['account'].lower()) for row in result['messages'])
         return dict(account=result['account'], items=result['messages'], scope=scope,
                     total=len(result['messages']), next_offset=None, limit_applied=True,
                     account_messages_total=result.get('account_messages_total'),
@@ -272,9 +419,11 @@ class RequestAccess:
         if result is None:
             result = self.access.gmail.read(id)
             self._mail_cache[id] = result
-        if self.selected_email is not None and result["account"].lower() != self.selected_email["account"]:
+        if result['account'].lower() != self._mail_accounts.get(id):
             raise ValueError("The Gmail account changed before that email could be read.")
         row = result["message"]
+        if row['id'] != id:
+            raise ValueError('Gmail returned a different message. Search again before reading it.')
         return dict(account=result["account"], id=row["id"], sender=row["sender"], subject=row["subject"],
                     date=row["date"], text=row["body"][offset:offset + limit], characters=len(row["body"]),
                     next_offset=offset + limit if offset + limit < len(row["body"]) else None,

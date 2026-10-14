@@ -251,3 +251,42 @@ Regression checks cover cancellation after dequeue, during transcript
 publication, and between microphone readiness and queue insertion.
 
 Final regression: **599 tests passed**.
+
+## Natural conversation and grounded follow-ups · 14 October 2026
+
+Peter now uses conversational British English, contractions and plain spoken
+sentences, with a 512-token routine reply budget. Generic greetings no longer ask
+for machine status. Factual email readings explain the message without unsolicited
+salary comparisons or invented job details; assessments remain available when asked.
+Links and source cards remain in the interface rather than the spoken prose.
+
+Conversation context considers up to 40 recent messages, preserving complete
+turns within the available budget. Restart greetings and app errors are excluded.
+App-recorded source and action metadata accompany this context, while older
+assistant prose is explicitly not evidence. The existing LM Studio Qwen 9B model
+was reloaded at 16,384 context, 80% GPU placement, one prediction and thinking off.
+The model remained healthy through the actual local dialogue checks.
+
+Email follow-ups retain verified references across errors and understand detail
+and salary questions. Sender/time refinements use the user's prior requests.
+Straightforward searches resolve local dates and clock times before inference;
+Gmail date operators are converted to epoch seconds to avoid Pacific-midnight
+interpretation. Returned ranges accompany the results. See Google's
+[Gmail search documentation](https://developers.google.com/workspace/gmail/api/guides/filtering).
+Unreplied mail is not silently substituted with unread mail.
+
+Unsupported search/read/action claims, fabricated Gmail links, invented subjects
+and counts exceeding returned results are checked before display and playback.
+If generation repeatedly fails these checks, verified search headers provide an
+honest fallback. Plural opening uses real source references or repeats the user's
+search; previous prose cannot supply message IDs. Browser-closing requests state
+the current capability honestly. Gmail permissions remain read-only.
+
+Actual-model verification used synthetic mail and mocked opening, never private
+email bodies or real browser actions. Social replies took 3.85–6.14 seconds.
+Routine date searches and refinements returned the actual synthetic messages;
+the final factual detail and salary replies took 4.15 and 2.22 seconds. Both
+messages opened in order in the controlled opener check. A separate 26-message
+conversation recalled the original room and guest correctly in 7.44 seconds.
+
+Final installed regression: **634 tests passed**.

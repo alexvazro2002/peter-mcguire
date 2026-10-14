@@ -17,7 +17,7 @@ class AssistantService:
         self.vault, self.calendar, self.runtime, self.path, self.zone = vault, calendar, runtime, conversation_path, zone
         self.memory = memory or MemoryStore(conversation_path.parent / "personal-memory.json")
         self.external = external
-        self.opening = OpenRequests(vault)
+        self.opening = OpenRequests(vault, zone=zone)
         self.briefing = DailyBriefing(calendar, zone)
         self.email_briefing = None
         self.history = History(vault, calendar, vault.root / ".history" / "assistant", memory=self.memory)
@@ -84,7 +84,7 @@ class AssistantService:
                     if email is not None:
                         emit(type="answer", **email)
                         return
-                quick = self.external.quick_answer(request, self.zone, cancel=self.cancel) if self.external is not None else None
+                quick = self.external.quick_answer(request, self.zone, cancel=self.cancel, conversation=conversation) if self.external is not None else None
                 if quick is not None:
                     emit(type="answer", **quick)
                     return

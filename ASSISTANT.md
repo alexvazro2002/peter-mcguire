@@ -161,7 +161,11 @@ Undo instead. Closing the app cancels outstanding Assistant work and stops only 
 owned model server; externally started servers are not killed.
 
 Chat is persisted locally in `assistant-conversation.json` (last 200 messages, last
-8 used as model conversation context). The file is ignored by git and packaging.
+40 considered as model conversation context, retaining complete recent turns
+within the available input budget). Daily restart greetings and app errors do
+not consume that history. Structured source references and executed search/action
+metadata accompany the context; older assistant prose is never proof of live facts.
+The file is ignored by git and packaging.
 App data stays accessible from any view, while progress/results are collected by
 the existing UI poll loop. No controls are updated from model/background threads.
 
