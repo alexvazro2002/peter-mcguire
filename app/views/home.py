@@ -1,6 +1,5 @@
 """Peter's observatory, with live links to the existing workspace features."""
 from datetime import date, datetime, time, timedelta
-import time as clock
 
 import flet as ft
 
@@ -45,6 +44,17 @@ def lateness_text(item, now):
     return f"{amount} {unit}{'' if amount == 1 else 's'} overdue"
 
 
+class ConversationScroll(ft.Column):
+    """Fully laid-out bounded history gives an accurate bottom scroll extent."""
+    def __init__(self, owner):
+        self.owner = owner
+        super().__init__(expand=True, spacing=10, scroll=ft.ScrollMode.AUTO, auto_scroll=False,
+                         on_scroll=owner.remember_scroll, on_scroll_interval=50)
+
+    def did_mount(self):
+        self.owner.restore_scroll(force=True)
+
+
 class PeterHomeView:
     def __init__(self, app):
         self.app, self.c = app, app.c
@@ -59,12 +69,16 @@ class PeterHomeView:
         self.status = ft.Text("", size=12, color=c["muted"], text_align=ft.TextAlign.CENTER,
                               max_lines=2, overflow=ft.TextOverflow.ELLIPSIS)
         self.model_status = label(app.peter_model_status, c, 10)
-        self.conversation = ft.ListView(expand=True, spacing=10, auto_scroll=True)
+        self.conversation = ConversationScroll(self)
         self._message_signature = None
+        self._needs_scroll = False
         if not hasattr(app, "home_conversation_state"):
             app.home_conversation_state = dict(history=False, hidden=True, recent_start=len(app.assistant.messages),
-                last_message_at=None, seen=self.message_signature(app.assistant.messages))
+                seen=self.message_signature(app.assistant.messages))
         self.conversation_state = app.home_conversation_state
+        for mode in ('history', 'live'):
+            self.conversation_state.setdefault(mode + '_scroll', -1.0)
+            self.conversation_state.setdefault(mode + '_follow', True)
         self.conversation_frame = ft.Container(self.conversation, expand=True, opacity=0,
             animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
             padding=ft.padding.symmetric(horizontal=4, vertical=6))
@@ -199,12 +213,30 @@ class PeterHomeView:
     def toggle_history(self, _):
         state = self.conversation_state
         state["history"] = not state["history"]
-        if not state["history"]:
-            state["hidden"] = True
-            state["recent_start"] = len(self.app.assistant.messages)
+        if state['history']:
+            state['history_scroll'], state['history_follow'] = -1.0, True
+        self._needs_scroll = True
         self._message_signature = None
         self.refresh_conversation()
         self.content.update()
+        self.restore_scroll()
+
+    def remember_scroll(self, event):
+        if self.app.home_view is not self:
+            return
+        state = self.conversation_state
+        mode = 'history' if state['history'] else 'live'
+        at_bottom = event.max_scroll_extent - event.pixels <= 24
+        state[mode + '_follow'] = at_bottom
+        state[mode + '_scroll'] = -1.0 if at_bottom else max(0.0, event.pixels)
+
+    def restore_scroll(self, *, force=False):
+        if not force and not self._needs_scroll:
+            return
+        state = self.conversation_state
+        mode = 'history' if state['history'] else 'live'
+        self._needs_scroll = False
+        self.conversation.scroll_to(offset=-1 if state[mode + '_follow'] else state[mode + '_scroll'], duration=0)
 
     def source(self, source):
         # Keep the existing source handlers available without the duplicate chat tab.
@@ -221,24 +253,8 @@ class PeterHomeView:
         except (OSError, ValueError, RuntimeError) as error:
             self.app.notify(str(error), True)
 
-    def expire_conversation(self, *, now=None):
-        """One opacity update after twenty idle seconds; Flet animates the fade."""
-        state = self.conversation_state
-        now = clock.monotonic() if now is None else now
-        if state["history"] or state["hidden"] or state["last_message_at"] is None:
-            return False
-        if self.app.assistant.busy or self.app.peter_state in {"listening", "thinking", "speaking"}:
-            state["last_message_at"] = now
-            return False
-        if now - state["last_message_at"] < 20:
-            return False
-        state["hidden"] = True
-        self.conversation_frame.opacity = 0
-        self.conversation_frame.update()
-        return True
-
     def refresh_conversation(self):
-        """Show the current turn briefly; saved history stays available on demand."""
+        """Keep this session's chat visible; older saved history stays on demand."""
         saved, state = self.app.assistant.messages, self.conversation_state
         incoming = self.message_signature(saved)
         if incoming != state["seen"]:
@@ -247,16 +263,23 @@ class PeterHomeView:
                 if before != after:
                     break
                 common += 1
+            if not common and state['seen'] and incoming:
+                # Persistence keeps the last 200 messages. Account for records
+                # removed from the front without treating old history as new.
+                for dropped in range(1, len(state['seen'])):
+                    overlap = len(state['seen']) - dropped
+                    if state['seen'][dropped:] == incoming[:overlap]:
+                        common = overlap
+                        state['recent_start'] = max(0, state['recent_start'] - dropped)
+                        break
             if len(incoming) > common:
-                appended_users = [index for index in range(common, len(saved)) if saved[index]["role"] == "user"]
-                if appended_users:
-                    state["recent_start"] = appended_users[-1]
-                elif state["hidden"]:
+                if state["hidden"]:
                     state["recent_start"] = common
-                state["last_message_at"] = clock.monotonic()
                 state["hidden"] = False
             else:
                 state["recent_start"] = min(state["recent_start"], len(saved))
+                if not saved:
+                    state['hidden'] = True
             state["seen"] = incoming
         messages = saved[-200:] if state["history"] else saved[state["recent_start"]:]
         signature = (state["history"], state["hidden"], self.message_signature(messages), self.app.assistant.busy)
@@ -264,7 +287,8 @@ class PeterHomeView:
             return
         self._message_signature = signature
         self.history_toggle.text = "Hide" if state["history"] else "Show history"
-        self.conversation.auto_scroll = not state["history"]
+        mode = 'history' if state['history'] else 'live'
+        self._needs_scroll = self._needs_scroll or state[mode + '_follow']
         self.conversation_frame.opacity = 1 if state["history"] or not state["hidden"] and messages else 0
         c = self.c
         try:
@@ -309,6 +333,7 @@ class PeterHomeView:
         self.refresh_conversation()
         if update:
             self.content.update()
+            self.restore_scroll()
 
 
 def build_home(app):

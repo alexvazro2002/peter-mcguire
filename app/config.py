@@ -26,7 +26,7 @@ DEFAULTS = {
         "enabled": True, "autostart": True, "speech_enabled": True, "startup_greeting": True,
         "greeting": "Systems are ready. At your service.",
         "voice_url": "http://127.0.0.1:3900", "voice_model": "kokoro-onnx", "voice_id": "bm_george",
-        "voice_speed": 1.0, "voice_pitch": 0.0, "british_voice_path": "",
+        "voice_speed": 1.15, "voice_pitch": 0.8, "british_voice_path": "",
         "asr_model": "whisper-1", "record_seconds": 30, "voice_timeout": 120, "voice_language": "en",
         "voice_runtime": "",
     },

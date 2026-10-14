@@ -248,8 +248,8 @@ def test_service_rejects_uninstalled_runtime_and_removes_desktop_parent_watchdog
     assert env["OMNIVOICE_DATA_DIR"] == str(tmp_path / ".runtime" / "voice-data")
 
 
-@pytest.mark.parametrize("pitch", [None, -1.5])
-def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_path, pitch):
+@pytest.mark.parametrize("pitch,speed", [(None, 1.0), (-1.5, 1.0), (0.8, 1.15)])
+def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_path, pitch, speed):
     from app.voice import VoiceController
     model = tmp_path / 'model'
     model.mkdir()
@@ -258,7 +258,7 @@ def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_pat
     runtime = tmp_path / 'runtime'
     (runtime / '.venv/bin').mkdir(parents=True)
     (runtime / '.venv/bin/python').write_text('fixture')
-    settings = dict(voice_model='kokoro-onnx', voice_runtime=str(runtime), british_voice_path=str(model), voice_id='bm_george')
+    settings = dict(voice_model='kokoro-onnx', voice_runtime=str(runtime), british_voice_path=str(model), voice_id='bm_george', voice_speed=speed)
     if pitch is not None:
         settings['voice_pitch'] = pitch
     requested_tools = []
@@ -280,10 +280,11 @@ def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_pat
         controller._speak_british('Private synthetic reply', '/usr/bin/pw-play', threading.Event())
         assert calls[0][1]['private'] is True
         assert calls[0][0][calls[0][0].index('--voice')+1] == 'bm_george'
-        assert calls[0][0][calls[0][0].index('--speed')+1] == '1.0'
+        assert calls[0][0][calls[0][0].index('--speed')+1] == str(speed)
         assert all('Private synthetic reply' not in arg for argv, _ in calls for arg in argv)
         if pitch:
-            assert 'pitch=0.91700404' in calls[1][0][calls[1][0].index('-af')+1]
+            assert f'pitch={2 ** (pitch / 12):.8f}' in calls[1][0][calls[1][0].index('-af')+1]
+            assert 'tempo=1' in calls[1][0][calls[1][0].index('-af')+1]
         else:
             assert len(calls) == 2 and 'ffmpeg' not in requested_tools
         assert calls[-1][0][0] == '/usr/bin/pw-play'

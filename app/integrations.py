@@ -14,6 +14,36 @@ def words(text):
     return set(re.findall(r"[^\W_]+", text.casefold()))
 
 
+def inbox_check_request(request):
+    """Recognise inbox checks without swallowing extra actions or search filters."""
+    text = re.sub(r'^\s*peter\s*[,.:]?\s*', '', request, flags=re.I)
+    return bool(re.fullmatch(
+        r"\s*(?:(?:can|could|would|will) you\s+)?(?:please\s+)?(?:check|look at)\s+"
+        r"(?:my\s+)?(?:(?:any\s+)?(?:new\s+)?(?:e-?mails?|mail)|(?:gmail\s+)?inbox|gmail)"
+        r"(?:\s+(?:and\s+)?(?:check\s+|look\s+)?(?:for|to see if (?:I have|there are))\s+"
+        r"(?:(?:any|some)\s+)?(?:new\s+)?(?:e-?mails?|mail|messages))?"
+        r"(?:\s+(?:now|please|for me))?[?.!]*\s*", text, re.I)) or bool(re.fullmatch(
+        r"\s*(?:(?:peter[, ]+)?)(?:do I have|are there|have I received)\s+(?:any\s+)?new\s+(?:e-?mails?|mail|messages)"
+        r"(?:\s+(?:in (?:my )?inbox|since (?:the )?last (?:check|session)))?[?.!]*\s*", text, re.I))
+
+
+def latest_email_answer(row, zone):
+    date = row['date']
+    try:
+        from zoneinfo import ZoneInfo
+        date = parsedate_to_datetime(date).astimezone(ZoneInfo(zone)).strftime('%A, %d %b %Y at %H:%M')
+    except (ValueError, TypeError, AttributeError):
+        pass
+    text = f"The latest inbox email is from {row['sender']}, with the subject: “{row['subject']}”."
+    if date:
+        text += ' It arrived on ' + date + '.'
+    return text
+
+
+def email_source(row):
+    return dict(kind='email', url=row['url'], title=row['subject'], id=row['id'], account=row['account'])
+
+
 class ExternalAccess:
     def __init__(self, internet=None, gmail=None):
         self.internet = internet or {"enabled": True}
@@ -34,22 +64,8 @@ class ExternalAccess:
             if not result['messages']:
                 return dict(text='Your inbox has no messages, sir.', changes=[], sources=[], operation_id=None)
             row = header_message(result['messages'][0], result['account'])
-            date = row['date']
-            try:
-                from zoneinfo import ZoneInfo
-                date = parsedate_to_datetime(date).astimezone(ZoneInfo(zone)).strftime('%A, %d %b %Y at %H:%M')
-            except (ValueError, TypeError, AttributeError):
-                pass
-            text = f"The latest inbox email is from {row['sender']}, with the subject: “{row['subject']}”."
-            if date:
-                text += ' It arrived on ' + date + '.'
-            return dict(text=text, changes=[], operation_id=None,
-                        sources=[dict(kind='email', url=row['url'], title=row['subject'], id=row['id'], account=row['account'])])
-        email_check = re.fullmatch(
-            r"\s*(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:check|look at)\s+"
-            r"(?:my\s+)?(?:(?:new\s+)?(?:e-?mails?|mail)|(?:gmail\s+)?inbox|gmail)"
-            r"(?:\s+(?:now|please|for me))?[?.!]*\s*", request, re.I)
-        if email_check:
+            return dict(text=latest_email_answer(row, zone), changes=[], operation_id=None, sources=[email_source(row)])
+        if inbox_check_request(request):
             if self.gmail is None:
                 raise ValueError('Connect Gmail in Settings first.')
             result = self.gmail.sync_new(cancel=cancel)
@@ -61,7 +77,16 @@ class ExternalAccess:
                         if count else 'I checked your inbox, sir. There are no new emails since the last check.')
             if result.get('has_more'):
                 text += ' More messages follow in the next batch.'
-            return dict(text=text, changes=[], sources=[], operation_id=None, gmail_check_batch=result)
+            # "New" uses the durable checkpoint, never an invented today-only
+            # filter. A separate newest-message header grounds the inbox preview.
+            latest = self.gmail.search('in:inbox', limit=1, cancel=cancel)
+            latest_text, sources = '', []
+            if latest['messages']:
+                row = header_message(latest['messages'][0], latest['account'])
+                latest_text, sources = latest_email_answer(row, zone), [email_source(row)]
+                text += ' ' + latest_text
+            return dict(text=text, changes=[], sources=sources, operation_id=None,
+                        gmail_check_batch=result, gmail_latest_text=latest_text)
         match = re.fullmatch(
             r"\s*(?:please\s+)?(?:what(?:'s| is) (?:the )?(?:current )?time|what time)"
             r"(?: is it)?(?: (?:right )?now)?(?: (?:in|at|for) (.+?))?[?.!]*\s*",

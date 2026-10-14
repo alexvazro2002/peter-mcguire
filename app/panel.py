@@ -629,7 +629,8 @@ class Workspace:
                                            if row['account'] == batch['account']]
                                 if len(waiting) > batch.get('count', len(batch['messages'])):
                                     event['text'] = message['text'] = (f"I checked your inbox, sir. You have {len(waiting)} "
-                                        f"email{'s' if len(waiting) != 1 else ''} waiting for your review.")
+                                        f"email{'s' if len(waiting) != 1 else ''} waiting for your review."
+                                        + (' ' + event['gmail_latest_text'] if event.get('gmail_latest_text') else ''))
                             except (OSError, ValueError, GmailError) as error:
                                 self.notify('Inbox was checked but its headers could not be saved: ' + str(error), True)
                     answer_saved = True
@@ -721,7 +722,6 @@ class Workspace:
                 if self.view == "home" and self.home_view:
                     if peter_changed:
                         self.home_view.refresh()
-                    self.home_view.expire_conversation()
                 if changed and self.library_view and self.view == "library":
                     if chat_changed:
                         self.library_view.refresh_messages()

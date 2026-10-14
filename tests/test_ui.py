@@ -240,38 +240,25 @@ def test_home_displays_typed_and_transcribed_messages_while_request_is_pending(p
     app.voice.events.put(dict(type='transcript', text='A spoken message'))
     one_poll(app, monkeypatch)
     assert app.home_view.conversation.controls[-1].content.controls[1].value == 'A spoken message'
-    assert len(app.home_view.conversation.controls) == 1
+    assert len(app.home_view.conversation.controls) == 2
     assert [message['text'] for message in app.assistant.messages] == ['A typed message', 'A spoken message']
 
 
-def test_home_messages_fade_after_twenty_idle_seconds_once(peter_ui, monkeypatch):
-    from app.views import home
-    app, clock = peter_ui, [100.0]
-    monkeypatch.setattr(home.clock, 'monotonic', lambda: clock[0])
-    app.assistant.append(dict(role='user', text='Current request'))
+def test_home_live_conversation_remains_visible_and_keeps_current_session(peter_ui, monkeypatch):
+    app=peter_ui
+    app.assistant.append(dict(role='user',text='Current request'))
     app.home_view.refresh_conversation()
-    clock[0] = 102.0
-    app.assistant.append(dict(role='assistant', text='Current reply'))
+    app.assistant.append(dict(role='assistant',text='Current reply'))
     app.home_view.refresh_conversation()
-    view = app.home_view
-    assert view.conversation_frame.opacity == 1 and len(view.conversation.controls) == 2
-    assert not view.expire_conversation(now=121.9)
-    app.assistant.busy = True
-    assert not view.expire_conversation(now=130.0)
-    app.assistant.busy = False
-    app.peter_state = 'speaking'
-    assert not view.expire_conversation(now=130.0)
-    app.peter_state = 'idle'
-    assert not view.expire_conversation(now=149.9)
-    assert view.expire_conversation(now=150.0)
-    assert view.conversation_frame.opacity == 0 and view.conversation_frame.animate_opacity.duration == 300
-    assert not view.expire_conversation(now=160.0)
-    assert len(app.assistant.messages) == 2  # Fading never deletes stored messages.
-    clock[0] = 170.0
-    app.assistant.append(dict(role='user', text='Next request'))
-    view.refresh_conversation()
-    assert view.conversation_frame.opacity == 1 and len(view.conversation.controls) == 1
-    assert view.conversation.controls[0].content.controls[1].value == 'Next request'
+    app.assistant.append(dict(role='user',text='Next request'))
+    app.home_view.refresh_conversation()
+    assert app.home_view.conversation_frame.opacity==1 and len(app.home_view.conversation.controls)==3
+    app.navigate('tools')
+    app.navigate('home')
+    assert app.home_view.conversation_frame.opacity==1 and len(app.home_view.conversation.controls)==3
+    app.home_view.toggle_history(None)
+    app.home_view.toggle_history(None)
+    assert app.home_view.conversation_frame.opacity==1 and len(app.home_view.conversation.controls)==3
 
 
 def test_home_history_toggle_survives_navigation_and_does_not_expire(peter_ui):
@@ -286,7 +273,6 @@ def test_home_history_toggle_survives_navigation_and_does_not_expire(peter_ui):
     view.toggle_history(None)
     assert view.history_toggle.text == 'Hide' and len(view.conversation.controls) == 200
     assert view.conversation_frame.opacity == 1 and not view.conversation.auto_scroll
-    assert not view.expire_conversation(now=100000)
     app.navigate('tools')
     app.navigate('home')
     assert app.home_view.history_toggle.text == 'Hide' and len(app.home_view.conversation.controls) == 200
@@ -458,3 +444,54 @@ def test_memory_editor_persists_to_assistant_store_and_source_opens_memory(peter
     monkeypatch.setattr(app, "confirm", lambda title, text, action: action())
     app.memory_view.delete(entries[0])
     assert app.assistant.memory.list() == []
+
+
+def test_history_opens_at_bottom_and_restores_browsing_position(peter_ui,monkeypatch):
+    app=peter_ui
+    app.assistant.messages=[dict(role='user',text=f'Message {n}') for n in range(40)]
+    jumps=[]
+    monkeypatch.setattr(ft.Column,'scroll_to',lambda self,**kw:jumps.append(kw))
+    view=app.home_view
+    view.toggle_history(None)
+    assert jumps[-1]==dict(offset=-1,duration=0)
+    view.remember_scroll(SimpleNamespace(pixels=720,max_scroll_extent=4000))
+    app.navigate('tools');app.navigate('home')
+    app.home_view.conversation.did_mount()
+    assert jumps[-1]==dict(offset=720,duration=0)
+    app.resize(None)
+    app.home_view.conversation.did_mount()
+    assert jumps[-1]==dict(offset=720,duration=0)
+    app.home_view.refresh()
+    assert jumps[-1]==dict(offset=720,duration=0)
+
+
+def test_live_scroll_position_stays_put_until_user_returns_to_bottom(peter_ui,monkeypatch):
+    app=peter_ui;jumps=[]
+    monkeypatch.setattr(ft.Column,'scroll_to',lambda self,**kw:jumps.append(kw))
+    app.assistant.messages.extend([dict(role='user',text='First message'),dict(role='assistant',text='First reply')])
+    view=app.home_view;view.refresh()
+    assert jumps[-1]['offset']==-1
+    view.remember_scroll(SimpleNamespace(pixels=100,max_scroll_extent=1500))
+    before=len(jumps)
+    app.assistant.messages.append(dict(role='user',text='Another message'))
+    view.refresh()
+    assert len(jumps)==before and view.conversation_state['live_scroll']==100
+    app.navigate('tools');app.navigate('home')
+    app.home_view.conversation.did_mount()
+    assert jumps[-1]['offset']==100
+    app.home_view.remember_scroll(SimpleNamespace(pixels=1500,max_scroll_extent=1500))
+    app.assistant.messages.append(dict(role='assistant',text='Another reply'))
+    app.home_view.refresh()
+    assert jumps[-1]['offset']==-1
+
+
+def test_live_session_does_not_expose_old_history_when_store_rolls(peter_ui):
+    from app.views.home import build_home
+    app=peter_ui
+    app.assistant.messages=[dict(role='user',text=f'Old {n}') for n in range(200)]
+    del app.home_conversation_state
+    build_home(app)
+    app.assistant.append(dict(role='assistant',text='Current greeting'))
+    app.home_view.refresh_conversation()
+    assert len(app.home_view.conversation.controls)==1
+    assert app.home_view.conversation.controls[0].content.controls[1].value=='Current greeting'

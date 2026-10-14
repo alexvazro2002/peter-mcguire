@@ -38,7 +38,7 @@ def test_shanghai_question_uses_live_clock_without_loading_model(tmp_path, monke
     assert service.messages[0]["text"] == "what time is it in china shang hai"
 
 
-@pytest.mark.parametrize('message_text', ['Can you check my emails now?', 'Check my Gmail inbox.', 'Please check my mail', 'Check my new emails now'])
+@pytest.mark.parametrize('message_text', ['Can you check my emails now?', 'Check my Gmail inbox.', 'Please check my mail', 'Check my new emails now', 'Can you check my inbox and for any new emails?', 'Peter, can you check my inbox for any new emails?', 'Do I have any new emails?', 'Check my inbox to see if there are any new emails.'])
 def test_direct_mail_check_uses_live_sync_without_loading_model(tmp_path, message_text):
     calls = []
     batch = dict(count=2, first_sync=False, has_more=False, batch_id='batch1', account='person@example.test',
@@ -49,7 +49,7 @@ def test_direct_mail_check_uses_live_sync_without_loading_model(tmp_path, messag
     runtime = SimpleNamespace(ensure=lambda: pytest.fail('An inbox check must not wait for the model'))
     vault, calendar, _ = stores(tmp_path)
     service = AssistantService(vault, calendar, runtime, tmp_path / 'conversation.json',
-        external=ExternalAccess(gmail=SimpleNamespace(sync_new=sync_new)))
+        external=ExternalAccess(gmail=SimpleNamespace(sync_new=sync_new, search=lambda *a, **kw: dict(account='person@example.test',messages=[]))))
     service.send(message_text)
     result = service.events.get(timeout=2)
     assert result['type'] == 'answer' and result['gmail_check_batch'] is batch
@@ -307,3 +307,33 @@ def test_email_reading_preserves_prose_and_link_host_without_tracking_overhead()
     assert 'Terms: 0% for 12 months.' in text and 'Annual fee £75.' in text
     assert 'https://example.test/offer' in text and 'https://short.test/terms' in text
     assert 'long URL shortened' in text and 'a'*500 not in text and count==1
+
+
+def test_new_email_check_uses_checkpoint_and_real_latest_header(tmp_path):
+    calls=[]
+    latest=fake_mail_client([])
+    searches=[]
+    original=latest.search
+    def search(query, **kw):
+        searches.append((query,kw))
+        return original(query,**kw)
+    latest.search=search
+    batch=dict(count=0,first_sync=False,has_more=False,batch_id='new-check',account='person@example.test',messages=[])
+    latest.sync_new=lambda **kw:batch
+    vault,calendar,_=stores(tmp_path)
+    runtime=SimpleNamespace(ensure=lambda:pytest.fail('Inbox checks do not need inference'))
+    service=AssistantService(vault,calendar,runtime,tmp_path/'chat.json',external=ExternalAccess(gmail=latest))
+    service.send('Can you check my inbox and for any new emails?')
+    result=service.events.get(timeout=2)
+    assert result['type']=='answer' and result['gmail_check_batch'] is batch
+    assert 'no new emails since the last check' in result['text']
+    assert 'Example Bank' in result['text'] and '14 Oct 2026' in result['text']
+    assert result['sources'][0]['id']=='abc123'
+    assert searches[0][0]=='in:inbox' and searches[0][1]['limit']==1
+
+
+@pytest.mark.parametrize('message_text',['Check my inbox and send a reply.','Check my inbox for emails from Alice.',
+    'Check my inbox and create a task.','Do I have new emails from Alice?'])
+def test_inbox_phrase_matcher_preserves_compound_actions_and_filters(message_text):
+    from app.integrations import inbox_check_request
+    assert not inbox_check_request(message_text)
