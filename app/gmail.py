@@ -51,12 +51,17 @@ class GmailCancelled(GmailError):
 
 
 class GmailAPIError(GmailError):
-    def __init__(self, status):
+    def __init__(self, status, reason=""):
         self.status = status
+        self.reason = reason if reason in {'SERVICE_DISABLED', 'accessNotConfigured', 'ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'insufficientPermissions'} else ''
         message = {401: "Gmail sign-in expired. Choose Connect Gmail again.",
                    403: "Gmail access was refused. Enable the Gmail API and approve read-only access for this account.",
                    429: "Gmail is temporarily rate limited. Try the inbox check again later."}.get(status,
                    f"Gmail returned HTTP {status}. The inbox checkpoint has not advanced.")
+        if self.reason in {'SERVICE_DISABLED', 'accessNotConfigured'}:
+            message = "The Gmail API is disabled for Peter's Google Cloud project. Enable Gmail API there, then choose Connect Gmail again."
+        elif self.reason in {'ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'insufficientPermissions'}:
+            message = "Google did not grant Gmail reading access. Choose Connect Gmail and approve only read-only access."
         super().__init__(message)
 
 
@@ -267,7 +272,21 @@ class GmailClient:
             response = session.request(method, url, timeout=(5, 20), allow_redirects=False, stream=True, **kwargs)
             try:
                 if not 200 <= response.status_code < 300:
-                    raise GmailAPIError(response.status_code)
+                    error_data, size = [], 0
+                    for chunk in response.iter_content(8192):
+                        _check(cancel); size += len(chunk)
+                        if size > 65536:
+                            break
+                        error_data.append(chunk)
+                    reason = ''
+                    try:
+                        detail = json.loads(b''.join(error_data)).get('error', {})
+                        if isinstance(detail, dict):
+                            reasons = [row.get('reason', '') for row in detail.get('errors', []) + detail.get('details', []) if isinstance(row, dict)]
+                            reason = next((value for value in reasons if value in {'SERVICE_DISABLED', 'accessNotConfigured', 'ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'insufficientPermissions'}), '')
+                    except (ValueError, AttributeError, TypeError):
+                        pass
+                    raise GmailAPIError(response.status_code, reason)
                 chunks, size = [], 0
                 for chunk in response.iter_content(65536):
                     _check(cancel); size += len(chunk)
@@ -331,6 +350,7 @@ class GmailClient:
             verifier, state = secrets.token_urlsafe(64), secrets.token_urlsafe(32)
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
             result = {}
+            owner = self
             class Callback(BaseHTTPRequestHandler):
                 def setup(self):
                     super().setup()
@@ -344,10 +364,14 @@ class GmailClient:
                     if "error" in query:
                         result["error"] = "Google sign-in was declined. Gmail remains disconnected."
                     elif len(query.get("code", [])) == 1:
-                        result["code"] = query["code"][0]
+                        try:
+                            result['status'] = owner._finish_sign_in(client, query['code'][0], verifier, redirect, cancel)
+                        except (GmailError, OSError, ValueError) as error:
+                            result['error'] = str(error) if isinstance(error, GmailError) else 'Peter could not save the Gmail connection. Check the local runtime folder.'
                     else:
                         self.send_error(400, "Missing sign-in code"); return
-                    body = b"Peter received the sign-in response. You may close this tab and return to Peter."
+                    body = ("Peter is connected to Gmail with read-only access. You may close this tab and return to Peter."
+                            if result.get('status') else "Peter could not connect to Gmail. " + result.get('error', 'Try Connect Gmail again.')).encode('utf-8')
                     self.send_response(200); self.send_header("Content-Type", "text/plain; charset=utf-8")
                     self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body)))
                     self.end_headers(); self.wfile.write(body)
@@ -368,21 +392,25 @@ class GmailClient:
                     server.handle_request()
             if result.get("error"):
                 raise GmailError(result["error"])
-            with self._session_factory() as session:
-                fresh = self._token_exchange(session, client, dict(code=result["code"], code_verifier=verifier,
-                    grant_type="authorization_code", redirect_uri=redirect), cancel=cancel)
-                if not fresh.get("refresh_token") or not fresh.get("access_token") or set(str(fresh.get("scope", "")).split()) != {SCOPE}:
-                    raise GmailError("Approve Peter's read-only Gmail access in Google sign-in, then try Connect Gmail again.")
-                profile = self._json_request(session, "GET", API_URL + "/profile",
-                    headers={"Authorization": "Bearer " + fresh["access_token"]}, cancel=cancel)
-                account = _clean(profile.get("emailAddress"), 320).lower()
-                if not account or "@" not in account:
-                    raise GmailError("Google did not identify the signed-in Gmail account.")
-                token = dict(access_token=fresh["access_token"], refresh_token=fresh["refresh_token"],
-                    expires_at=self._clock() + int(fresh.get("expires_in", 3600)), scope=SCOPE,
-                    client_id=client["client_id"], account=account)
-                _check(cancel); _private_json(self.token_file, token); self._token = token
-            return self.status()
+            return result['status']
+
+    def _finish_sign_in(self, client, code, verifier, redirect, cancel):
+        """Verify Gmail and persist its account-bound token before browser success."""
+        with self._session_factory() as session:
+            fresh = self._token_exchange(session, client, dict(code=code, code_verifier=verifier,
+                grant_type="authorization_code", redirect_uri=redirect), cancel=cancel)
+            if not fresh.get("refresh_token") or not fresh.get("access_token") or set(str(fresh.get("scope", "")).split()) != {SCOPE}:
+                raise GmailError("Approve Peter's read-only Gmail access in Google sign-in, then try Connect Gmail again.")
+            profile = self._json_request(session, "GET", API_URL + "/profile",
+                headers={"Authorization": "Bearer " + fresh["access_token"]}, cancel=cancel)
+            account = _clean(profile.get("emailAddress"), 320).lower()
+            if not account or "@" not in account:
+                raise GmailError("Google did not identify the signed-in Gmail account.")
+            token = dict(access_token=fresh["access_token"], refresh_token=fresh["refresh_token"],
+                expires_at=self._clock() + int(fresh.get("expires_in", 3600)), scope=SCOPE,
+                client_id=client["client_id"], account=account)
+            _check(cancel); _private_json(self.token_file, token); self._token = token
+        return self.status()
 
     def _profile(self, session, cancel):
         profile = self._api(session, "/profile", cancel=cancel)

@@ -403,6 +403,32 @@ def test_email_headers_are_not_acknowledged_when_queue_save_fails(peter_ui, monk
     assert not acknowledgements
 
 
+def test_direct_mail_check_persists_headers_and_starts_sender_offers(peter_ui, monkeypatch):
+    app, acknowledged = peter_ui, []
+    monkeypatch.setattr(app.gmail, 'acknowledge', acknowledged.append)
+    monkeypatch.setattr(app.gmail.client, 'status', lambda: dict(connected=True, account='test@example.test'))
+    batch = dict(messages=[queued_email()], account='test@example.test', batch_id='mailcheck1')
+    app.assistant.events.put(dict(type='answer', text='I checked your inbox, sir.',
+        sources=[], changes=[], operation_id=None, gmail_check_batch=batch))
+    one_poll(app, monkeypatch)
+    assert acknowledged == ['mailcheck1'] and app.email_state_path.exists()
+    assert app.email_routine_started
+    assert app.assistant.messages[0]['text'] == 'I checked your inbox, sir.'
+    assert 'new email from Ada Example' in app.assistant.messages[-1]['text']
+
+
+def test_manual_inbox_check_reports_mail_already_queued_by_startup(peter_ui, monkeypatch):
+    app = peter_ui
+    app.email_briefing.add([queued_email()], account='test@example.test')
+    monkeypatch.setattr(app.gmail, 'acknowledge', lambda _: None)
+    monkeypatch.setattr(app.gmail.client, 'status', lambda: dict(connected=True, account='test@example.test'))
+    batch = dict(messages=[], account='test@example.test', batch_id='emptycheck', count=0)
+    app.assistant.events.put(dict(type='answer', text='No new emails since the last check.',
+        sources=[], changes=[], operation_id=None, gmail_check_batch=batch))
+    one_poll(app, monkeypatch)
+    assert app.assistant.messages[0]['text'] == 'I checked your inbox, sir. You have 1 email waiting for your review.'
+
+
 def test_email_reading_flags_remain_in_saved_history(peter_ui, monkeypatch):
     app = peter_ui
     app.assistant.events.put(dict(type='answer', text='Subject: Test.\n\nQuoted email contents.',

@@ -1,8 +1,20 @@
 """Shared local chat transport for the librarian and the workspace Assistant."""
+import math
 import re
 
 from library.server import validate_url
 from library.auth import check_auth, request_options
+
+ASSISTANT_REPLY_SCHEMA = {
+    "oneOf": [
+        {"type": "object", "properties": {"answer": {"type": "string"}, "apply_changes": {"type": "boolean"},
+            "intent": {"enum": ["read", "write", "clarify"]}}, "required": ["answer", "apply_changes"], "additionalProperties": False},
+        {"type": "object", "properties": {"tool_calls": {"type": "array", "minItems": 1, "maxItems": 8,
+            "items": {"type": "object", "properties": {"name": {"type": "string"}, "arguments": {"type": "object"}},
+                      "required": ["name", "arguments"], "additionalProperties": False}},
+            "intent": {"enum": ["read", "write", "clarify"]}}, "required": ["tool_calls"], "additionalProperties": False},
+    ]
+}
 
 
 class ChatClient:
@@ -10,11 +22,18 @@ class ChatClient:
         self.settings = settings
         self.last_usage = {}
 
-    def complete(self, messages, *, structured=False, max_tokens=None):
+    def complete(self, messages, *, structured=False, max_tokens=None, response_schema=None):
         import requests
         validate_url(self.settings["server_url"])
         payload = {"messages": messages, "temperature": 0.1 if structured else 0.15,
                    "max_tokens": int(max_tokens if max_tokens is not None else self.settings.get("max_tokens", 1800))}
+        for name, low, high in (("temperature", 0, 2), ("top_p", 0.01, 1), ("min_p", 0, 1), ("top_k", 0, 200)):
+            if name not in self.settings or self.settings[name] is None:
+                continue
+            value = self.settings[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not low <= value <= high or name == "top_k" and int(value) != value:
+                raise ValueError("Invalid model sampling setting: " + name)
+            payload[name] = int(value) if name == "top_k" else value
         if self.settings.get("api_model"):
             payload["model"] = self.settings["api_model"]
         elif self.settings.get("runtime_provider") == "lmstudio":
@@ -36,6 +55,9 @@ class ChatClient:
                 payload["reasoning_effort"] = "none"
         if structured:
             payload["response_format"] = {"type": "json_object"}
+            if self.settings.get("runtime_provider") == "lmstudio":
+                payload["response_format"] = {"type": "json_schema", "json_schema": {
+                    "name": "peter_reply", "strict": True, "schema": response_schema or ASSISTANT_REPLY_SCHEMA}}
         url = self.settings["server_url"].rstrip("/") + "/chat/completions"
         response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
         if getattr(response, "status_code", 200) in {400, 422} and "reasoning_effort" in payload:
@@ -48,6 +70,10 @@ class ChatClient:
                 payload.pop("reasoning_effort")
                 response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
         # Some existing local servers lack response_format; the prompt still defines JSON.
+        if structured and getattr(response, "status_code", 200) in {400, 422}:
+            if payload["response_format"]["type"] == "json_schema":
+                payload["response_format"] = {"type": "json_object"}
+                response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
         if structured and getattr(response, "status_code", 200) in {400, 422}:
             payload.pop("response_format")
             response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))

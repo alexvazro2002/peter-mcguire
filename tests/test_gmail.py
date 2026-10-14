@@ -277,6 +277,8 @@ def test_oauth_uses_real_loopback_pkce_state_and_readonly_scope(configured):
             bad = requests.get(base, params={"state": "wrong", "code": "synthetic-code"}, timeout=3)
             callback_results.append(bad.status_code)
             good = requests.get(base, params={"state": params["state"][0], "code": "synthetic-code"}, timeout=3)
+            assert client.token_file.is_file()
+            assert 'connected to Gmail with read-only access' in good.text
             callback_results.append(good.status_code)
         thread = threading.Thread(target=callback); threads.append(thread); thread.start()
         return True
@@ -288,6 +290,42 @@ def test_oauth_uses_real_loopback_pkce_state_and_readonly_scope(configured):
     assert form["grant_type"] == "authorization_code" and len(form["code_verifier"]) >= 43
     token = json.loads(client.token_file.read_text())
     assert token["scope"] == SCOPE and token["account"] == backend.account
+
+
+def test_callback_reports_api_failure_without_false_success_or_overwriting_token(configured):
+    client, backend = configured
+    original = client.token_file.read_bytes()
+    backend.failures['/profile'] = 403
+    bodies, threads = [], []
+    def browser(url):
+        params = parse_qs(urlsplit(url).query)
+        def callback():
+            response = requests.get(params['redirect_uri'][0],
+                params=dict(state=params['state'][0], code='synthetic-code'), timeout=3)
+            bodies.append(response.text)
+        worker = threading.Thread(target=callback); threads.append(worker); worker.start()
+    client._browser_open = browser
+    with pytest.raises(GmailError, match='Enable the Gmail API'):
+        client.connect(budget=5)
+    for worker in threads:
+        worker.join(timeout=3)
+    assert len(bodies) == 1 and bodies[0].startswith('Peter could not connect to Gmail.')
+    assert 'received the sign-in response' not in bodies[0]
+    assert client.token_file.read_bytes() == original
+
+
+@pytest.mark.parametrize('reason, description', [
+    ('SERVICE_DISABLED', 'Gmail API is disabled'), ('accessNotConfigured', 'Gmail API is disabled'),
+    ('ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'reading access'), ('insufficientPermissions', 'reading access')])
+def test_google_api_failure_reasons_are_specific_and_never_echo_payloads(configured, reason, description):
+    client, _ = configured
+    class Session:
+        def request(self, *a, **kw):
+            return Response({'error': {'message': 'private diagnostic payload', 'details': [{'reason': reason}]}}, 403)
+    with pytest.raises(GmailAPIError) as error:
+        client._json_request(Session(), 'GET', API_URL + '/profile')
+    assert error.value.reason == reason and description in str(error.value)
+    assert 'private diagnostic payload' not in str(error.value)
 
 
 def test_cancelled_browser_consent_preserves_existing_token(configured):

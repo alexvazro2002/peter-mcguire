@@ -490,3 +490,20 @@ def test_existing_settings_preserved_and_notification_defaults_merged(tmp_path):
     result = load_config(path)
     assert result["library"]["max_tokens"] == 1000 and result["library"]["context_size"] == 16384
     assert result["notifications"]["include_answer"] is False
+
+
+def test_installed_hauhau_model_is_selectable_and_keeps_fast_settings(tmp_path):
+    weights = tmp_path / 'Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf'
+    weights.touch()
+    choice = next(c for c in model_choices({}, [tmp_path]) if c.key == 'qwen9b')
+    selected = selected_settings({}, choice)
+    assert selected['model_path'] == str(weights) and selected['projector_path'] == ''
+    assert not selected['enable_thinking'] and selected['temperature'] == .35
+    assert model_matches(selected, ['qwen3.5-9b-uncensored-hauhaucs-aggressive'])
+    from library.lmstudio import matches
+    assert matches(dict(type='llm',modelKey='qwen3.5-9b-uncensored-hauhaucs-aggressive'),selected)
+    gemma = next(c for c in model_choices({}, [tmp_path]) if c.key == 'gemma')
+    Path(gemma.path).parent.mkdir(parents=True,exist_ok=True)
+    Path(gemma.path).touch()
+    fallback = selected_settings(selected,gemma)
+    assert 'temperature' not in fallback and 'top_k' not in fallback

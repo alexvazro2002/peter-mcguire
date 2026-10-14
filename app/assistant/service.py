@@ -78,7 +78,7 @@ class AssistantService:
                     if email is not None:
                         emit(type="answer", **email)
                         return
-                quick = self.external.quick_answer(request, self.zone) if self.external is not None else None
+                quick = self.external.quick_answer(request, self.zone, cancel=self.cancel) if self.external is not None else None
                 if quick is not None:
                     emit(type="answer", **quick)
                     return

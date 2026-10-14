@@ -620,6 +620,18 @@ class Workspace:
                     if event["type"] == "answer":
                         message.update({k: event.get(k) for k in ("sources", "changes", "operation_id")})
                         message.update({k: event[k] for k in ("email_offer", "email_handled", "email_content", "untrusted") if k in event})
+                        if event.get('gmail_check_batch'):
+                            try:
+                                self.email_routine_started, self.email_prompt_pending = True, True
+                                self.receive_email_batch(event['gmail_check_batch'])
+                                batch = event['gmail_check_batch']
+                                waiting = [row for row in self.email_briefing.export_state()['pending']
+                                           if row['account'] == batch['account']]
+                                if len(waiting) > batch.get('count', len(batch['messages'])):
+                                    event['text'] = message['text'] = (f"I checked your inbox, sir. You have {len(waiting)} "
+                                        f"email{'s' if len(waiting) != 1 else ''} waiting for your review.")
+                            except (OSError, ValueError, GmailError) as error:
+                                self.notify('Inbox was checked but its headers could not be saved: ' + str(error), True)
                     answer_saved = True
                     try:
                         self.assistant.append(message)

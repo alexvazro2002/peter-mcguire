@@ -71,7 +71,8 @@ def test_lmstudio_fast_mode_disables_reasoning_with_specific_fallback(monkeypatc
     client.complete([], structured=True)
     assert captured[0]["reasoning_effort"] == "none"
     assert "reasoning_effort" not in captured[1]
-    assert captured[0]["response_format"] == captured[1]["response_format"] == {"type": "json_object"}
+    assert captured[0]["response_format"] == captured[1]["response_format"]
+    assert captured[1]["response_format"]["type"] == "json_schema"
     assert captured[1]["chat_template_kwargs"] == {"enable_thinking": False}
 
 
@@ -158,3 +159,21 @@ def test_remote_model_endpoint_is_rejected_before_request(monkeypatch):
     client = ChatClient({"server_url": "https://example.com/v1"})
     with pytest.raises(ValueError, match="local"):
         client.complete([])
+
+
+def test_sampling_settings_reach_local_model(monkeypatch):
+    import requests
+    captured=[]
+    response = SimpleNamespace(status_code=200, raise_for_status=lambda: None,
+        json=lambda: {'choices':[{'message':{'content':'{"answer":"Ready"}'}}]})
+    monkeypatch.setattr(requests,'post',lambda *a, **kw: captured.append(kw['json']) or response)
+    ChatClient(dict(server_url='http://localhost:8081/v1', temperature=.35, top_p=.8, top_k=20, min_p=0)).complete([], structured=True)
+    assert {k:captured[0][k] for k in ('temperature','top_p','top_k','min_p')} == dict(temperature=.35,top_p=.8,top_k=20,min_p=0)
+
+
+@pytest.mark.parametrize('name,value', [('temperature',float('nan')),('temperature',True),('top_k',3.5),('top_p',0),('min_p',2)])
+def test_invalid_sampling_settings_fail_before_request(name,value,monkeypatch):
+    import requests
+    monkeypatch.setattr(requests,'post',lambda *a, **kw: pytest.fail('Invalid sampling parameters must not reach inference'))
+    with pytest.raises(ValueError,match='sampling setting'):
+        ChatClient(dict(server_url='http://localhost:8081/v1',**{name:value})).complete([])

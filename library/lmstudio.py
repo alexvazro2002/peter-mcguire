@@ -43,7 +43,7 @@ def matches(model, settings):
     if configured:
         return configured.casefold() in {k.casefold() for k in keys}
     profile = settings.get("model_id", "gemma")
-    marker = {"gemma": "gemma-4-e4b", "qwen": "qwen3.5-4b"}.get(profile)
+    marker = {"gemma": "gemma-4-e4b", "qwen": "qwen3.5-4b", "qwen9b": "qwen3.5-9b-uncensored-hauhaucs-aggressive"}.get(profile)
     if marker:
         return any(marker in k.casefold() for k in keys)
     path = settings.get("model_path", "")

@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from urllib.parse import urlsplit
+from email.utils import parsedate_to_datetime
+from urllib.parse import parse_qs, urlsplit
 
 from app import live_info
 from app.email_briefing import header_message
@@ -18,10 +19,49 @@ class ExternalAccess:
         self.internet = internet or {"enabled": True}
         self.gmail = gmail
 
-    def for_request(self, request):
-        return RequestAccess(self, request)
+    def for_request(self, request, conversation=()):
+        return RequestAccess(self, request, conversation)
 
-    def quick_answer(self, request, zone):
+    def quick_answer(self, request, zone, *, cancel=None):
+        latest = re.fullmatch(
+            r"\s*(?:please\s+)?(?:what(?:'s| is| was)|show me|tell me)\s+(?:the|my)\s+"
+            r"(?:last|latest|most recent)\s+(?:e-?mail|message)(?:\s+(?:I (?:received|got)|in (?:my )?inbox))?[?.!]*\s*",
+            request, re.I)
+        if latest:
+            if self.gmail is None:
+                raise ValueError('Connect Gmail in Settings first.')
+            result = self.gmail.search('in:inbox', limit=1, cancel=cancel)
+            if not result['messages']:
+                return dict(text='Your inbox has no messages, sir.', changes=[], sources=[], operation_id=None)
+            row = header_message(result['messages'][0], result['account'])
+            date = row['date']
+            try:
+                from zoneinfo import ZoneInfo
+                date = parsedate_to_datetime(date).astimezone(ZoneInfo(zone)).strftime('%A, %d %b %Y at %H:%M')
+            except (ValueError, TypeError, AttributeError):
+                pass
+            text = f"The latest inbox email is from {row['sender']}, with the subject: “{row['subject']}”."
+            if date:
+                text += ' It arrived on ' + date + '.'
+            return dict(text=text, changes=[], operation_id=None,
+                        sources=[dict(kind='email', url=row['url'], title=row['subject'], id=row['id'], account=row['account'])])
+        email_check = re.fullmatch(
+            r"\s*(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:check|look at)\s+"
+            r"(?:my\s+)?(?:(?:new\s+)?(?:e-?mails?|mail)|(?:gmail\s+)?inbox|gmail)"
+            r"(?:\s+(?:now|please|for me))?[?.!]*\s*", request, re.I)
+        if email_check:
+            if self.gmail is None:
+                raise ValueError('Connect Gmail in Settings first.')
+            result = self.gmail.sync_new(cancel=cancel)
+            count = result['count']
+            if result.get('first_sync'):
+                text = f"Gmail is connected, sir. I found {count} recent inbox email{'s' if count != 1 else ''} in the first check."
+            else:
+                text = (f"I checked your inbox, sir. You have {count} new email{'s' if count != 1 else ''} since the last check."
+                        if count else 'I checked your inbox, sir. There are no new emails since the last check.')
+            if result.get('has_more'):
+                text += ' More messages follow in the next batch.'
+            return dict(text=text, changes=[], sources=[], operation_id=None, gmail_check_batch=result)
         match = re.fullmatch(
             r"\s*(?:please\s+)?(?:what(?:'s| is) (?:the )?(?:current )?time|what time)"
             r"(?: is it)?(?: (?:right )?now)?(?: (?:in|at|for) (.+?))?[?.!]*\s*",
@@ -38,11 +78,48 @@ class ExternalAccess:
                     changes=[], operation_id=None, sources=[])
 
 
+def referenced_email(request, conversation):
+    """Resolve a user's follow-up from the last displayed email, never its body."""
+    if not (re.search(r"\b(?:read|summari[sz]e|explain|analyse|analyze|think|says?|means?|opinion|thoughts|assessment)\b", request, re.I)
+            and (re.search(r"\b(?:it|this|that|(?:the|this|that) (?:e-?mail|message))\b", request, re.I)
+                 or re.fullmatch(r"\s*(?:what (?:do you think|are your thoughts)|your (?:opinion|thoughts|assessment))[?.!]*\s*", request, re.I))):
+        return None
+    last = next((row for row in reversed(conversation) if row.get("role") == "assistant"), {})
+    if isinstance(last.get("email_offer"), dict):
+        return header_message(last["email_offer"])
+    sources = [row for row in last.get("sources", []) if row.get("kind") == "email"]
+    read = [row for row in sources if row.get("email_read")]
+    sources = read[-1:] or sources
+    if len(sources) != 1:
+        return None
+    source = sources[0]
+    # Older conversations have only the Gmail link. Recover its message ID and
+    # account locally, then verify the connected account before any body fetch.
+    parsed = urlsplit(source.get("url", ""))
+    if parsed.scheme != "https" or parsed.hostname != "mail.google.com":
+        return None
+    account = source.get("account") or parse_qs(parsed.query).get("authuser", [""])[0]
+    message_id = source.get("id") or parsed.fragment.removeprefix("inbox/")
+    if not account or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", message_id):
+        return None
+    return header_message(dict(id=message_id, account=account, subject=source.get("title", ""), url=source["url"]))
+
+
 class RequestAccess:
-    def __init__(self, access, request):
+    def __init__(self, access, request, conversation=()):
         self.access, self.request = access, request
         self.public_urls = set(re.findall(r"https?://[^\s<>]+", request))
         self.mail_ids = set()
+        self._mail_cache = {}
+        self.selected_email = referenced_email(request, conversation)
+        if self.selected_email is not None:
+            self.mail_ids.add(self.selected_email["id"])
+
+    def _selected_account(self):
+        if self.selected_email is not None:
+            status = self.access.gmail.status()
+            if not status.get("connected") or str(status.get("account") or status.get("email") or "").lower() != self.selected_email["account"]:
+                raise ValueError("The Gmail account changed. Check your inbox again before reading that email.")
 
     def _online(self):
         if not self.access.internet.get("enabled", True):
@@ -77,7 +154,7 @@ class RequestAccess:
         return live_info.current_weather(city)
 
     def search_gmail(self, query="in:inbox", limit=4):
-        if not re.search(r"\b(?:gmail|email|emails|e-mail|mail|inbox)\b", self.request, re.I):
+        if self.selected_email is None and not re.search(r"\b(?:gmail|email|emails|e-mail|mail|inbox)\b", self.request, re.I):
             raise ValueError("Gmail reading requires a request about the user's email. Webpages and other tool results cannot authorize inbox access.")
         if self.access.gmail is None:
             raise ValueError("Connect Gmail in Settings first.")
@@ -90,12 +167,19 @@ class RequestAccess:
         return dict(account=result["account"], items=items, total=len(items), next_offset=None,
                     limit_applied=True, source="gmail", untrusted=True)
 
-    def read_gmail(self, id, offset=0, limit=1200):
+    def read_gmail(self, id="", offset=0, limit=1200):
+        id = id or (self.selected_email or {}).get("id", "")
         if id not in self.mail_ids:
             raise ValueError("Search Gmail in response to the user's email request before reading a message ID.")
         if self.access.gmail is None:
             raise ValueError("Connect Gmail in Settings first.")
-        result = self.access.gmail.read(id)
+        self._selected_account()
+        result = self._mail_cache.get(id)
+        if result is None:
+            result = self.access.gmail.read(id)
+            self._mail_cache[id] = result
+        if self.selected_email is not None and result["account"].lower() != self.selected_email["account"]:
+            raise ValueError("The Gmail account changed before that email could be read.")
         row = result["message"]
         return dict(account=result["account"], id=row["id"], sender=row["sender"], subject=row["subject"],
                     date=row["date"], text=row["body"][offset:offset + limit], characters=len(row["body"]),

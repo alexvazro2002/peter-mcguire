@@ -22,6 +22,8 @@ PROFILES = (
      "Recommended for Assistant actions and Library Q&A. General text, code and tool use.", True),
     ("gemma", "Gemma 4 E4B", "gemma-4-E4B-it-Q4_K_M.gguf", "mmproj-gemma-4-E4B-it-BF16.gguf",
      "Alternative for general chat, writing and code questions. Compare quality and speed on your hardware.", True),
+    ("qwen9b", "Qwen3.5 9B HauhauCS Aggressive", "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf", "",
+     "Local text chat and Assistant actions. Uses the installed LM Studio Q4_K_M weights with thinking disabled.", True),
     ("paddle", "PaddleOCR-VL 1.6", "PaddleOCR-VL-1.6-GGUF.gguf", "PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
      "Document-image OCR and layout extraction, not a general Assistant/Library text-chat model. Image OCR is not wired into this chat.", False),
 )
@@ -41,8 +43,10 @@ def model_choices(settings, roots=None):
     choices = []
     for key, title, filename, projector, recommendation, chat in PROFILES:
         weight = next((p for p in found if p.name.casefold() == filename.casefold()), None)
+        if weight is None and key == "qwen9b":
+            continue
         if weight is None:
-            folder = {"qwen": "Qwen3.5-4B", "gemma": "gemma-4-E4B", "paddle": "PaddleOCR-VL"}[key]
+            folder = {"qwen9b": "Qwen3.5-9B-Uncensored-HauhauCS-Aggressive", "qwen": "Qwen3.5-4B", "gemma": "gemma-4-E4B", "paddle": "PaddleOCR-VL"}[key]
             weight = Path(roots[0]) / folder / filename
         mmproj = weight.parent / projector if projector else None
         choices.append(ModelChoice(key, title, str(weight), str(mmproj) if mmproj else "", chat, recommendation))
@@ -63,6 +67,11 @@ def selected_settings(settings, choice):
         raise ValueError("Model file not found: " + choice.path + ". Set its location in Settings, or move ai_models beside main_flet.py.")
     result = dict(settings, model_id=choice.key, model_path=choice.path, projector_path="", external_model=choice.key == "external",
                   lmstudio_model_key="", api_model="")
+    if choice.key == "qwen9b":
+        result.update(temperature=0.35, top_p=0.8, top_k=20, min_p=0.0, enable_thinking=False)
+    elif choice.key in {"qwen", "gemma"}:
+        for name in ("temperature", "top_p", "top_k", "min_p"):
+            result.pop(name, None)
     # Text-only chat does not need to allocate the vision projector.
     return result
 
@@ -72,7 +81,7 @@ def model_matches(settings, identifiers):
         return True
     expected = Path(settings.get("model_path", "")).stem.casefold()
     profile = settings["model_id"]
-    markers = {"qwen": "qwen3.5-4b", "gemma": "gemma-4-e4b"}
+    markers = {"qwen": "qwen3.5-4b", "qwen9b": "qwen3.5-9b-uncensored-hauhaucs-aggressive", "gemma": "gemma-4-e4b"}
     marker = markers.get(profile, expected)
     alias = settings.get("api_model", "")
     return any((expected and expected in str(value).casefold()) or (marker and marker in str(value).casefold())
