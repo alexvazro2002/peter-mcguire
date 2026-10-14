@@ -100,7 +100,7 @@ def write_wav(output, samples, sample_rate):
         Path(temporary).unlink(missing_ok=True)
 
 
-def synthesize(model_dir, text, output, *, speed=0.95, voice="bm_george", engine_factory=create_engine):
+def synthesize(model_dir, text, output, *, speed=1.0, voice="bm_george", engine_factory=create_engine):
     model_dir = validate_request(model_dir, voice, speed)
     started = time.monotonic()
     engine = engine_factory(model_dir)
@@ -128,7 +128,7 @@ def main(argv=None):
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--text-file", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--speed", type=float, default=0.95)
+    parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--voice", choices=tuple(VOICE_IDS), default="bm_george")
     args = parser.parse_args(argv)
     try:

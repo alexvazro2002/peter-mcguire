@@ -101,8 +101,8 @@ class VoiceController:
             self._pending.put_nowait(task)
         self._status("thinking", "Preparing local voice" if operation != "record" else "Opening microphone")
 
-    def startup(self):
-        self._submit("startup")
+    def startup(self, text=None):
+        self._submit("startup", text)
 
     def toggle_listen(self):
         with self._lock:
@@ -155,7 +155,8 @@ class VoiceController:
                 elif operation == "speak":
                     self._speak(session, text, cancelled)
                 elif operation == "startup":
-                    greeting = self.settings.get("greeting", "Hello. I'm Peter McGuire. Your workspace is ready.")
+                    greeting = (self.settings.get("greeting", "Hello. I'm Peter McGuire. Your workspace is ready.")
+                                if text is None else text)
                     if self.settings.get("speech_enabled", True) and self.settings.get("startup_greeting", True):
                         self._speak(session, spoken_text(greeting), cancelled)
                 self._check(cancelled)
@@ -280,7 +281,7 @@ class VoiceController:
         models = Path(self.settings.get("british_voice_path") or DATA_DIR / ".runtime" / "british-voice").expanduser()
         if not python.is_file() or not all((models / name).is_file() for name in ("model.int8.onnx", "voices.bin", "tokens.txt")):
             raise VoiceError("Peter's British voice is not installed. Run install-voice.sh to prepare it.")
-        speed, pitch = float(self.settings.get("voice_speed", 0.98)), float(self.settings.get("voice_pitch", -1.5))
+        speed, pitch = float(self.settings.get("voice_speed", 1.0)), float(self.settings.get("voice_pitch", 0.0))
         if not math.isfinite(speed) or not 0.7 <= speed <= 1.4 or not math.isfinite(pitch) or not -4 <= pitch <= 2:
             raise VoiceError("Choose voice speed from 0.7 to 1.4 and pitch from -4 to +2 semitones in Settings.")
         ffmpeg = self._which("ffmpeg") if pitch else None

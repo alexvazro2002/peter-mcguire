@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from app.assistant.engine import Engine
 from app.assistant.transactions import History
+from app.briefing import DailyBriefing
 from app.config import atomic_write
 from app.memory import MemoryStore
 
@@ -15,6 +16,8 @@ class AssistantService:
         self.vault, self.calendar, self.runtime, self.path, self.zone = vault, calendar, runtime, conversation_path, zone
         self.memory = memory or MemoryStore(conversation_path.parent / "personal-memory.json")
         self.external = external
+        self.briefing = DailyBriefing(calendar, zone)
+        self.email_briefing = None
         self.history = History(vault, calendar, vault.root / ".history" / "assistant", memory=self.memory)
         self.events, self.cancel, self.lock = queue.Queue(), threading.Event(), threading.RLock()
         self.busy, self.messages, self.warning, self.storage_error = False, [], "", ""
@@ -66,6 +69,15 @@ class AssistantService:
 
         def work():
             try:
+                briefing = self.briefing.respond(request, cancel=self.cancel)
+                if briefing is not None:
+                    emit(type="answer", **briefing)
+                    return
+                if self.email_briefing is not None:
+                    email = self.email_briefing.respond(request, cancel=self.cancel)
+                    if email is not None:
+                        emit(type="answer", **email)
+                        return
                 quick = self.external.quick_answer(request, self.zone) if self.external is not None else None
                 if quick is not None:
                     emit(type="answer", **quick)

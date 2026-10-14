@@ -2,9 +2,9 @@
 
 Peter now speaks with the British male Kokoro stock voice **George**, at a measured pace. The speech path uses the installed Sherpa ONNX runtime in VoiceStudio’s isolated Python environment. It synthesizes locally from revision-pinned model files; no actor recording or voice clone is used.
 
-The default speaking pace is `0.98`; pitch is lowered by `1.5` semitones using FFmpeg Rubber Band while preserving tempo and formants. Settings → Peter · Local voice exposes pace and pitch so they can be adjusted. FFmpeg with the `rubberband` filter is needed for pitch changes. VoiceStudio continues to provide local microphone transcription.
+The default speaking pace is `1.0`, with George's natural pitch and no audio pitch processing. This keeps the British male voice clear and avoids the artificial depth of the previous setting. Settings → Peter · Local voice exposes pace and pitch for optional adjustments; FFmpeg with the `rubberband` filter is needed only for a nonzero pitch adjustment. VoiceStudio continues to provide local microphone transcription.
 
-Peter’s instructions now require British English, direct short answers, a calm formal manner and restrained dry wit. They discourage excitement, filler, flattery and repetitive apologies. The startup greeting is “Systems are ready. At your service.” The selected reasoning model remains the existing LM Studio model.
+Peter’s instructions require British English, direct short answers, a calm formal manner and restrained dry wit. They discourage excitement, filler, flattery and repetitive apologies. The startup greeting follows the local time: “Good morning/afternoon/evening, sir. Ready for today?” A positive reply starts the calendar briefing. The selected reasoning model remains the existing LM Studio model.
 
 The duplicated Peter sidebar item is removed. Home shows the current typed or spoken conversation as it arrives, then fades it over 300 milliseconds after twenty idle seconds. Listening, model work and speech keep the current messages visible and restart the idle timer. **Show history** displays the saved conversation; **Hide** closes it until a new message arrives. Hiding messages never deletes conversation data. Source buttons and undo remain available in Home history.
 

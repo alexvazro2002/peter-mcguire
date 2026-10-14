@@ -106,7 +106,7 @@ def _header(value):
     return _clean("".join(pieces), 1000)
 
 
-def message_data(message, *, account=None):
+def message_data(message, *, account=None, headers_only=False):
     """Return bounded plain text; never fetch remote resources or attachments."""
     payload = message.get("payload") or {}
     headers = {str(h.get("name", "")).lower(): _header(h.get("value", ""))
@@ -143,7 +143,8 @@ def message_data(message, *, account=None):
             if isinstance(child, dict):
                 visit(child, depth + 1)
 
-    visit(payload)
+    if not headers_only:
+        visit(payload)
     message_id = _message_id(message.get("id", ""))
     try:
         received = int(message.get("internalDate", 0))
@@ -152,11 +153,12 @@ def message_data(message, *, account=None):
     return dict(id=message_id, thread_id=_clean(message.get("threadId"), 128),
                 sender=headers.get("from", "Unknown sender"), subject=headers.get("subject", "(No subject)"),
                 date=headers.get("date", ""), received_ms=received,
-                snippet=_clean(html.unescape(message.get("snippet", "")), 1000),
+                snippet="" if headers_only else _clean(html.unescape(message.get("snippet", "")), 1000),
                 body=_clean("\n".join(plain or rich), 16000),
                 body_truncated=bool(body_limits) or len("\n".join(plain or rich).strip()) > 16000,
                 unread="UNREAD" in message.get("labelIds", []),
                 source="gmail", untrusted=True,
+                metadata_only=bool(headers_only),
                 url="https://mail.google.com/mail/u/?" + urlencode({"authuser": account}) + "#inbox/" + message_id
                     if account else "https://mail.google.com/mail/#inbox/" + message_id)
 
@@ -433,9 +435,12 @@ class GmailClient:
                 raise GmailError("Gmail repeated a history page. The checkpoint has not advanced.")
             pages.add(page)
 
-    def _read(self, session, message_id, cancel):
-        message = self._api(session, "/messages/" + _message_id(message_id), params={"format": "full"}, cancel=cancel)
-        return message, message_data(message, account=self._credentials()[1]["account"])
+    def _read(self, session, message_id, cancel, *, headers_only=False):
+        params = {"format": "metadata" if headers_only else "full"}
+        if headers_only:
+            params["metadataHeaders"] = ["From", "Subject", "Date"]
+        message = self._api(session, "/messages/" + _message_id(message_id), params=params, cancel=cancel)
+        return message, message_data(message, account=self._credentials()[1]["account"], headers_only=headers_only)
 
     def search(self, query="", *, limit=10, cancel=None):
         if not isinstance(query, str) or len(query) > 1000:
@@ -443,7 +448,7 @@ class GmailClient:
         with self._lock, self._session_factory() as session:
             account, _ = self._profile(session, cancel)
             ids = self._ids(session, query=query.strip(), limit=max(1, min(50, int(limit))), cancel=cancel)
-            messages = [self._read(session, message_id, cancel)[1] for message_id in ids]
+            messages = [self._read(session, message_id, cancel, headers_only=True)[1] for message_id in ids]
             return dict(account=account, messages=messages, source="gmail", untrusted=True)
 
     def read(self, message_id, *, cancel=None):
@@ -455,13 +460,23 @@ class GmailClient:
             return dict(account=account, message=data, source="gmail", untrusted=True)
 
     def sync_new(self, *, cancel=None, batch_size=50):
-        """Return a durable pending batch; acknowledge it only after UI delivery."""
+        """Return durable inbox headers; fetch a body only through explicit read()."""
         with self._lock, self._session_factory() as session:
             _check(cancel); account, profile_cursor = self._profile(session, cancel)
             state = _load_json(self.state_file, private=True) if self.state_file.is_file() else {"accounts": {}}
             accounts = state.setdefault("accounts", {})
             account_state = accounts.setdefault(account, {})
             if account_state.get("pending"):
+                # Older installations may have fetched bodies for a startup
+                # digest. Discard those before returning or replaying it.
+                pending = account_state["pending"]
+                changed = False
+                for message in pending.get("messages", []):
+                    if message.get("body") or message.get("snippet") or not message.get("metadata_only"):
+                        message.update(body="", snippet="", body_truncated=False, metadata_only=True)
+                        changed = True
+                if changed:
+                    _check(cancel); _private_json(self.state_file, state)
                 return account_state["pending"]
             backlog = account_state.get("backlog")
             if not backlog:
@@ -490,7 +505,7 @@ class GmailClient:
             messages = []
             for message_id in ids:
                 try:
-                    raw, data = self._read(session, message_id, cancel)
+                    raw, data = self._read(session, message_id, cancel, headers_only=True)
                 except GmailAPIError as error:
                     if error.status == 404:
                         continue  # Mail permanently deleted since its history record.

@@ -40,7 +40,7 @@ def test_synthesis_selects_george26_and_writes_private_pcm_wav(model, tmp_path):
             calls.append((text, kwargs)); return SimpleNamespace(samples=[0.0, 0.5, -0.5] * 8000, sample_rate=24000)
     output = tmp_path / "spoken.wav"
     result = british_voice.synthesize(model, "Good evening. I am ready.", output, engine_factory=lambda _: Engine())
-    assert calls == [("Good evening. I am ready.", {"sid": 26, "speed": .95})]
+    assert calls == [("Good evening. I am ready.", {"sid": 26, "speed": 1.0})]
     assert result["language"] == "en-gb" and result["phonemizer_voice"] == "en" and result["duration_seconds"] == 1
     assert "Good evening" not in json.dumps(result)
     with wave.open(str(output)) as audio:

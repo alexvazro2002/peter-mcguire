@@ -110,12 +110,15 @@ def test_only_explicit_peter_environment_files_are_selected(configured, tmp_path
     assert other.client_file == client.client_file and other.token_file == client.token_file
 
 
-def test_first_check_reads_recent_bodies_but_baselines_all_inbox_ids(configured):
+def test_first_check_fetches_recent_headers_and_baselines_all_inbox_ids(configured):
     client, backend = configured
     result = client.sync_new()
     assert result["mode"] == "initial" and result["first_sync"]
     assert [m["id"] for m in result["messages"]] == ["recent"]
-    assert result["messages"][0]["body"] == "This is inbox content."
+    assert result["messages"][0]["body"] == result["messages"][0]["snippet"] == ""
+    assert result["messages"][0]["metadata_only"]
+    calls = [options for _, url, options in backend.calls if url.endswith("/messages/recent")]
+    assert calls[0]["params"] == {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}
     assert not any(url.endswith("/messages/old") for _, url, _ in backend.calls)
     state = json.loads(client.state_file.read_text())["accounts"][backend.account]
     assert "history_id" not in state and state["pending"]["batch_id"] == result["batch_id"]
@@ -126,6 +129,31 @@ def test_first_check_reads_recent_bodies_but_baselines_all_inbox_ids(configured)
     assert os.stat(client.token_file).st_mode & 0o777 == 0o600
     assert os.stat(client.state_file).st_mode & 0o777 == 0o600
     assert os.stat(client.root).st_mode & 0o777 == 0o700
+
+
+def test_search_offers_headers_but_explicit_read_fetches_body(configured):
+    client, backend = configured
+    result = client.search("from:sender@example.test")
+    assert result["messages"] and all(message["metadata_only"] for message in result["messages"])
+    assert all(not message["body"] and not message["snippet"] for message in result["messages"])
+    assert all(options["params"]["format"] == "metadata" for _, url, options in backend.calls if "/messages/" in url)
+    backend.calls.clear()
+    read = client.read("recent")
+    assert read["message"]["body"] == "This is inbox content." and not read["message"]["metadata_only"]
+    assert next(options for _, url, options in backend.calls if url.endswith("/messages/recent"))["params"] == {"format": "full"}
+
+
+def test_legacy_pending_body_is_discarded_before_replay(configured):
+    client, backend = configured
+    batch = client.sync_new()
+    state = json.loads(client.state_file.read_text())
+    entry = state["accounts"][backend.account]["pending"]["messages"][0]
+    entry.update(body="Older private body", snippet="Older private preview", metadata_only=False)
+    _private_json(client.state_file, state)
+    result = client.sync_new()
+    assert result["batch_id"] == batch["batch_id"]
+    assert result["messages"][0]["body"] == result["messages"][0]["snippet"] == ""
+    assert "Older private" not in client.state_file.read_text()
 
 
 def test_initial_zero_days_only_baselines_without_historical_digest(configured):

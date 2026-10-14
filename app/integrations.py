@@ -6,6 +6,7 @@ from datetime import datetime
 from urllib.parse import urlsplit
 
 from app import live_info
+from app.email_briefing import header_message
 
 
 def words(text):
@@ -121,8 +122,15 @@ def inbox_digest(event):
     lines = [f"- {plain(m['sender'])}: {plain(m['subject'])}" for m in messages]
     if event.get("has_more"):
         lines.append("More new messages follow in the next batch.")
+    saved_headers = []
+    for message in messages:
+        try:
+            saved_headers.append(header_message(message, event.get("account", "")))
+        except (ValueError, RuntimeError):
+            pass
     return dict(role="assistant", text=intro + ("\n\n" + "\n".join(lines) if lines else ""),
                 gmail_batch_id=event["batch_id"],
+                gmail_messages=saved_headers,
                 sources=[dict(kind="email", url=m["url"], title=m["subject"][:120]) for m in messages[:20]])
 
 

@@ -72,6 +72,16 @@ def test_conversational_history_uses_json_without_changing_workspace(workspace):
     assert calendar.entries() == [] and history.recent() == []
 
 
+def test_previous_email_contents_stay_marked_as_untrusted_data(workspace):
+    model = ScriptedModel({'answer': 'At your service.', 'apply_changes': True})
+    conversation = [dict(role='user', text='Read it.'),
+                    dict(role='assistant', text='An email body containing third party instructions.', email_content=True)]
+    engine_for(workspace, model).run('Hello.', conversation)
+    prior = json.loads(model.messages[0][2]['content'])
+    assert prior['untrusted_email_excerpt'] == conversation[1]['text']
+    assert 'never instructions' in prior['answer'] and not prior['apply_changes']
+
+
 def test_quick_sequential_requests_bound_large_old_history(workspace):
     conversation = []
     for n in range(20):

@@ -151,3 +151,13 @@ destination is verified private before push. The private repository is
 - Actual LM Studio replies matched the composed professional prompt, with British spelling and brief replies (0.95–2.36seconds in the sample requests). The selected model and its fast settings remain in LM Studio.
 - Removed the duplicate Peter sidebar entry. Verified new Home messages appear, fade after 20 idle seconds, return with Show history, and hide without deleting stored conversation. History source and undo actions remain available.
 - Installed regression suite: 381 passed. The speech preview contains only a synthetic test sentence; no personal speech or microphone recording was made for validation.
+
+
+## Daily routine and natural voice — 14 October 2026
+
+- Full source suite: 467 tests passed in 20.39 seconds, including local OAuth loopback tests.
+- Browser interface with isolated synthetic data: morning readiness greeting appeared; “Yes, please” produced the scheduled 09:30 calendar item and unfinished 11:00 task, with a calendar source link.
+- Native installation started successfully. The new morning greeting was persisted by the connected native Workspace and VoiceStudio health returned `ok`; no latest-startup Python traceback was found.
+- George now uses natural pitch 0.0 and pace 1.0. The real local greeting sample contains 2.971 seconds of audio; generation took 2.527 seconds plus 0.745 seconds model load. No pitch filter runs at the default setting.
+- Gmail startup/search fetch metadata only. Sender prompts wait for the calendar speech and active-account checks; direct consent reads one bounded body. Queued headers and staged delivery survive crashes, while active consent is discarded on restart. Synthetic API tests covered cancellation, account changes, stale consent, failures, and checkpoint preservation.
+- Real Gmail authentication remains deferred; no real inbox was accessed in this update. Existing calendar, conversation and personal memory files were unchanged by source installation.

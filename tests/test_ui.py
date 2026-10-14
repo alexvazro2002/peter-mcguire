@@ -14,7 +14,9 @@ class VoiceDouble:
         import queue
         self.events, self.state, self.spoken = queue.Queue(), "idle", []
         self.startups, self.listens = 0, 0
-    def startup(self): self.startups += 1
+    def startup(self, text=None):
+        self.startups += 1
+        self.greeting = text
     def toggle_listen(self): self.listens += 1
     def speak(self, text): self.spoken.append(text)
     def cancel(self): pass
@@ -335,6 +337,80 @@ def test_startup_preloads_shared_model_once_and_greets_through_voice(peter_ui, m
     asyncio.run(app.start_peter())
     assert calls == ["shared model"] and app.voice.startups == 1
     assert app.assistant_model_selected
+    assert app.voice.greeting.endswith(", sir. Ready for today?")
+    assert app.assistant.messages[-1]["text"] == app.voice.greeting
+    assert app.assistant.briefing.awaiting_ready
+
+
+def test_startup_greets_and_accepts_ready_without_model_preload(peter_ui, monkeypatch):
+    app = peter_ui
+    app.cfg['peter']['autostart'] = False
+    monkeypatch.setattr(app.model_runtime, 'ensure', lambda: pytest.fail('Readiness must not load the model'))
+    asyncio.run(app.start_peter())
+    assert app.voice.startups == 1 and not app.assistant_model_selected
+    assert app.submit_peter('Yes, please.')
+    event = app.assistant.events.get(timeout=2)
+    assert event['type'] == 'answer' and event['briefing_complete']
+    assert 'Tasks pending today:' in event['text'] or 'no pending tasks' in event['text']
+
+
+def queued_email():
+    return dict(id='a1', sender='Ada Example <ada@example.test>', subject='A test update',
+                url='https://mail.google.com/mail/u/0/#inbox/a1', received_ms=1)
+
+
+def test_startup_mail_is_saved_without_interrupting_readiness(peter_ui, monkeypatch):
+    app, acknowledgements = peter_ui, []
+    app.assistant.briefing.start()
+    monkeypatch.setattr(app.gmail, 'acknowledge', acknowledgements.append)
+    app.receive_email_batch(dict(messages=[queued_email()], account='test@example.test', batch_id='batch1'))
+    assert acknowledgements == ['batch1'] and app.email_state_path.exists()
+    assert not app.assistant.messages and not app.voice.spoken
+    assert not app.offer_next_email()
+    saved = app.email_state_path.read_text()
+    assert 'Ada Example' in saved and 'body' not in saved
+
+
+def test_email_offer_waits_for_calendar_speech_then_preserves_exact_prompt(peter_ui, monkeypatch):
+    app = peter_ui
+    monkeypatch.setattr(app.gmail.client, 'status', lambda: dict(connected=True, account='test@example.test'))
+    app.email_briefing.add([queued_email()], account='test@example.test')
+    app.assistant.events.put(dict(type='answer', text='Your calendar is clear.',
+        sources=[], changes=[], operation_id=None, briefing_complete=True))
+    def speak(text):
+        app.voice.spoken.append(text)
+        app.voice.state = 'thinking'
+    monkeypatch.setattr(app.voice, 'speak', speak)
+    one_poll(app, monkeypatch)
+    assert app.voice.spoken == ['Your calendar is clear.']
+    assert app.email_prompt_pending and app.email_briefing.awaiting is None
+    app.voice.state = 'idle'
+    one_poll(app, monkeypatch)
+    prompt = 'You have a new email from Ada Example, would you like me to read it for you, sir?'
+    assert app.voice.spoken[-1] == prompt
+    assert app.assistant.messages[-1]['text'] == prompt
+    assert app.assistant.messages[-1]['email_offer']['id'] == 'a1'
+
+
+def test_email_headers_are_not_acknowledged_when_queue_save_fails(peter_ui, monkeypatch):
+    app, acknowledgements = peter_ui, []
+    monkeypatch.setattr(app.gmail, 'acknowledge', acknowledgements.append)
+    def fail():
+        raise OSError('Disk full')
+    monkeypatch.setattr(app, 'save_email_briefing', fail)
+    with pytest.raises(OSError, match='Disk full'):
+        app.receive_email_batch(dict(messages=[queued_email()], account='test@example.test', batch_id='batch1'))
+    assert not acknowledgements
+
+
+def test_email_reading_flags_remain_in_saved_history(peter_ui, monkeypatch):
+    app = peter_ui
+    app.assistant.events.put(dict(type='answer', text='Subject: Test.\n\nQuoted email contents.',
+        sources=[], changes=[], operation_id=None, untrusted=True, email_content=True,
+        email_handled=dict(account='test@example.test', id='a1')))
+    one_poll(app, monkeypatch)
+    assert app.assistant.messages[-1]['email_content']
+    assert app.assistant.messages[-1]['untrusted']
 
 
 def test_memory_editor_persists_to_assistant_store_and_source_opens_memory(peter_ui, monkeypatch):

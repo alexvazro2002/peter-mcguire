@@ -1,5 +1,6 @@
 """Application shell and lifecycle; views, storage, and AI are independent modules."""
 import asyncio
+import json
 import queue
 import time
 import subprocess
@@ -16,8 +17,9 @@ from app.storage import Vault
 from app.assistant.service import AssistantService
 from app.notifications import Notifier
 from app.voice import VoiceController
-from app.gmail import GmailController
-from app.integrations import ExternalAccess, inbox_digest
+from app.gmail import GmailController, GmailError
+from app.integrations import ExternalAccess
+from app.email_briefing import EmailBriefing
 from app.theme import button, field, palette
 from app.views.library import LibraryView
 from app.views.assistant import AssistantView
@@ -67,6 +69,12 @@ class Workspace:
         self.external = ExternalAccess(self.cfg["internet"], self.gmail.client)
         self.assistant = AssistantService(self.vault, self.calendar, self.model_runtime,
                                           DATA_DIR / "assistant-conversation.json", self.cfg["assistant_timezone"], external=self.external)
+        self.email_state_path = DATA_DIR / ".runtime" / "email-briefing.json"
+        self.email_state_error = ""
+        self.email_briefing = EmailBriefing(self.gmail.client)
+        self.assistant.email_briefing = self.email_briefing
+        self.email_routine_started, self.email_prompt_pending = False, False
+        self.restore_email_briefing()
         self.assistant_view, self.assistant_draft = None, ""
         self.assistant_status = "Ready" if not self.assistant.warning else "Needs attention"
         self.home_view, self.memory_view = None, None
@@ -107,15 +115,26 @@ class Workspace:
     async def start_peter(self):
         """Preload the existing shared runtime and start local voice off the UI thread."""
         settings = self.cfg.get("peter", {})
-        if self.peter_started or not settings.get("autostart", True):
+        if self.peter_started:
             return
         self.peter_started = True
+        greeting = ""
+        if settings.get("startup_greeting", True):
+            greeting = self.assistant.briefing.start()
+            try:
+                self.assistant.append(dict(role="assistant", text=greeting, daily_greeting=True))
+            except (OSError, ValueError) as error:
+                self.notify("Could not save Peter's greeting: " + str(error), True)
+        if settings.get("enabled", True):
+            self.voice.startup(greeting)
+        if not settings.get("autostart", True):
+            if self.home_view and self.view == "home":
+                self.home_view.refresh()
+            return
         self.assistant_model_selected = True
         self.peter_model_status = "Loading the shared local model…"
         if self.view == "home" and self.home_view:
             self.home_view.refresh()
-        if settings.get("enabled", True):
-            self.voice.startup()
         runtime = self.model_runtime
         def load():
             try:
@@ -132,7 +151,7 @@ class Workspace:
 
     def submit_peter(self, text):
         """Voice and Home text both enter the original Assistant tool/transaction loop."""
-        if not self.assistant_model_selected:
+        if not self.assistant_model_selected and not self.assistant.briefing.awaiting_ready and not self.email_briefing.awaiting:
             choose_model(self, "Peter", lambda: self.submit_peter(text))
             return False
         try:
@@ -388,11 +407,14 @@ class Workspace:
             self.render()
 
     def reset_assistant(self):
+        briefing = self.assistant.briefing
         self.assistant.close()
         self.model_runtime.close(wait=True)
         self.model_runtime = ModelRuntime(self.cfg["library"])
         self.assistant = AssistantService(self.vault, self.calendar, self.model_runtime,
                                           DATA_DIR / "assistant-conversation.json", self.cfg["assistant_timezone"], external=self.external)
+        self.assistant.briefing.awaiting_ready = briefing.awaiting_ready
+        self.assistant.email_briefing = self.email_briefing
         self.assistant_status = "Ready" if not self.assistant.warning else "Needs attention"
         self.peter_model_status = "Local model connects when needed"
 
@@ -401,7 +423,61 @@ class Workspace:
         self.gmail = GmailController(self.cfg["gmail"])
         self.external = ExternalAccess(self.cfg["internet"], self.gmail.client)
         self.assistant.external = self.external
+        self.email_briefing = EmailBriefing(self.gmail.client)
+        self.assistant.email_briefing = self.email_briefing
+        self.restore_email_briefing()
         self.gmail_status = self.gmail.client.status()["message"]
+
+    def restore_email_briefing(self):
+        """Queued headers survive a restart; a fresh prompt is required for consent."""
+        try:
+            if self.email_state_path.exists():
+                self.email_briefing.restore_state(json.loads(self.email_state_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, GmailError) as error:
+            self.email_state_error = "Saved email prompts need attention; the original file was preserved: " + str(error)
+            self.gmail_status = self.email_state_error
+
+    def save_email_briefing(self):
+        if self.email_state_error:
+            raise ValueError(self.email_state_error)
+        atomic_write(self.email_state_path, json.dumps(self.email_briefing.export_state(), ensure_ascii=False) + "\n")
+
+    def receive_email_batch(self, event):
+        # Persist sender headers before advancing Gmail's cursor. The startup
+        # conversation stays on the readiness prompt until the calendar is read.
+        self.email_briefing.add(event["messages"], account=event["account"])
+        self.save_email_briefing()
+        self.gmail.acknowledge(event["batch_id"])
+        if self.email_routine_started:
+            self.email_prompt_pending = True
+
+    def offer_next_email(self):
+        """Wait for the calendar speech to finish before asking about a sender."""
+        if (not self.email_routine_started or not self.email_prompt_pending or self.assistant.busy
+                or self.email_state_error or self.assistant.briefing.awaiting_ready or self.email_briefing.awaiting):
+            return False
+        speech = self.cfg["peter"].get("enabled", True) and self.cfg["peter"].get("speech_enabled", True)
+        if speech and self.voice.state not in {"idle", "error"}:
+            return False
+        try:
+            result = self.email_briefing.offer_next()
+        except (OSError, ValueError, GmailError) as error:
+            self.email_prompt_pending = False
+            self.notify("Could not prepare the next email prompt: " + str(error), True)
+            return False
+        self.email_prompt_pending = False
+        if result is None:
+            return False
+        try:
+            self.save_email_briefing()
+            self.assistant.append(dict(role="assistant", **{k: v for k, v in result.items() if k in {"text", "sources", "email_offer", "untrusted"}}))
+        except (OSError, ValueError) as error:
+            self.email_briefing.expire()
+            self.notify("Could not save Peter's email prompt: " + str(error), True)
+            return False
+        if speech:
+            self.voice.speak(result["text"])
+        return True
 
     def connect_gmail(self, client_file):
         try:
@@ -488,19 +564,9 @@ class Workspace:
                         self.notify("Gmail: " + self.gmail_status, True)
                 elif event["type"] == "gmail_summary":
                     try:
-                        # A crash after saving but before acknowledgment replays
-                        # the same batch; retain one visible copy and retry ack.
-                        if not any(m.get("gmail_batch_id") == event["batch_id"] for m in self.assistant.messages):
-                            self.assistant.append(inbox_digest(event))
-                        self.gmail.acknowledge(event["batch_id"])
-                        assistant_changed = peter_changed = True
-                        if event["count"] and self.cfg["peter"].get("enabled", True) and self.cfg["peter"].get("speech_enabled", True) and not self.assistant.busy:
-                            intro = "Gmail connected. I've listed recent inbox messages." if event.get("first_sync") else f"You have {event['count']} new inbox messages. I've listed them in the window."
-                            self.voice.speak(intro)
-                        if self.assistant_view and self.view == "assistant":
-                            self.assistant_view.refresh_messages()
-                    except (OSError, ValueError) as error:
-                        self.notify("Gmail digest could not be saved; it will be retried next check: " + str(error), True)
+                        self.receive_email_batch(event)
+                    except (OSError, ValueError, GmailError) as error:
+                        self.notify("Gmail headers could not be saved; they will be retried next check: " + str(error), True)
                 elif event["type"] == "gmail_authorize":
                     self.notify("Complete Gmail's read-only sign-in in your browser.")
             while True:
@@ -553,9 +619,12 @@ class Workspace:
                     message = dict(role="assistant", text=event.get("text", "**Could not complete the request:** " + event.get("message", "")))
                     if event["type"] == "answer":
                         message.update({k: event.get(k) for k in ("sources", "changes", "operation_id")})
+                        message.update({k: event[k] for k in ("email_offer", "email_handled", "email_content", "untrusted") if k in event})
+                    answer_saved = True
                     try:
                         self.assistant.append(message)
                     except (OSError, ValueError) as error:
+                        answer_saved = False
                         self.notify("Could not save chat history: " + str(error), True)
                     if event.get("operation_id"):
                         self.assistant_data_changed()
@@ -563,6 +632,19 @@ class Workspace:
                         self.peter_model_status = "Local model ready · Shared with AI Library"
                         if self.cfg.get("peter", {}).get("enabled", True) and self.cfg.get("peter", {}).get("speech_enabled", True):
                             self.voice.speak(event["text"])
+                        if event.get("briefing_complete"):
+                            self.email_routine_started, self.email_prompt_pending = True, True
+                        if event.get("email_briefing_next"):
+                            self.email_prompt_pending = True
+                        if event.get("email_handled"):
+                            try:
+                                if answer_saved:
+                                    self.email_briefing.commit_handled(event["email_handled"])
+                                else:
+                                    self.email_briefing.restore_state(self.email_briefing.export_state())
+                                self.save_email_briefing()
+                            except (OSError, ValueError) as error:
+                                self.notify("Could not save email progress: " + str(error), True)
                         self.ai_answer_ready("Peter", event["text"])
                     if self.assistant_view and self.view == "assistant":
                         self.assistant_view.refresh_messages()
@@ -615,6 +697,8 @@ class Workspace:
                         self.library_ready, self.library_busy = False, False
                         if self.library_status != "Could not launch":
                             self.library_status = "Disconnected"
+            if self.offer_next_email():
+                assistant_changed = peter_changed = True
             try:
                 if self.view == "home" and datetime.now().replace(second=0, microsecond=0) != self.home_focus_minute:
                     home_changed = True

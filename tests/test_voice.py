@@ -100,18 +100,20 @@ def test_accepts_actual_loopback_urls():
     assert spoken_text("**Hello** [Alex](https://example.com).\n```python\nsecret\n```") == "Hello Alex."
 
 
-def test_startup_speech_uses_verified_api_and_erases_audio(speech_server):
+@pytest.mark.parametrize("greeting, expected", [(None, "Good day, Alex."),
+                                                  ("Good morning, sir. Ready for today?", "Good morning, sir. Ready for today?")])
+def test_startup_speech_uses_verified_api_and_erases_audio(speech_server, greeting, expected):
     url, capture = speech_server
     seen = []
     controller = VoiceController({"voice_url": url, "greeting": "Good day, Alex."},
                                  which=lambda name: "/usr/bin/" + name,
                                  popen=audio_process_factory(seen))
     try:
-        controller.startup()
+        controller.startup(greeting)
         wait_event(controller, "voice_status", "speaking")
         wait_event(controller, "voice_status", "idle")
         payload = json.loads(capture["requests"][0][1])
-        assert payload == {"model": "kittentts", "input": "Good day, Alex.", "voice": "expr-voice-2-m", "response_format": "wav", "speed": 1.0}
+        assert payload == {"model": "kittentts", "input": expected, "voice": "expr-voice-2-m", "response_format": "wav", "speed": 1.0}
         assert capture["requests"][0][0] == "/v1/audio/speech"
         assert seen[0][0][0] == "/usr/bin/pw-play"
         assert not Path(seen[0][0][1]).exists()
@@ -242,7 +244,8 @@ def test_service_rejects_uninstalled_runtime_and_removes_desktop_parent_watchdog
     assert env["OMNIVOICE_DATA_DIR"] == str(tmp_path / ".runtime" / "voice-data")
 
 
-def test_british_voice_uses_installed_runtime_pitch_and_preserves_private_text(tmp_path):
+@pytest.mark.parametrize("pitch", [None, -1.5])
+def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_path, pitch):
     from app.voice import VoiceController
     model = tmp_path / 'model'
     model.mkdir()
@@ -251,7 +254,14 @@ def test_british_voice_uses_installed_runtime_pitch_and_preserves_private_text(t
     runtime = tmp_path / 'runtime'
     (runtime / '.venv/bin').mkdir(parents=True)
     (runtime / '.venv/bin/python').write_text('fixture')
-    controller = VoiceController(dict(voice_model='kokoro-onnx', voice_runtime=str(runtime), british_voice_path=str(model), voice_id='bm_george', voice_speed=.98, voice_pitch=-1.5), which=lambda name: '/usr/bin/' + name)
+    settings = dict(voice_model='kokoro-onnx', voice_runtime=str(runtime), british_voice_path=str(model), voice_id='bm_george')
+    if pitch is not None:
+        settings['voice_pitch'] = pitch
+    requested_tools = []
+    def which(name):
+        requested_tools.append(name)
+        return '/usr/bin/' + name
+    controller = VoiceController(settings, which=which)
     calls = []
     def run(argv, cancel, **kwargs):
         calls.append((argv, kwargs))
@@ -266,8 +276,12 @@ def test_british_voice_uses_installed_runtime_pitch_and_preserves_private_text(t
         controller._speak_british('Private synthetic reply', '/usr/bin/pw-play', threading.Event())
         assert calls[0][1]['private'] is True
         assert calls[0][0][calls[0][0].index('--voice')+1] == 'bm_george'
+        assert calls[0][0][calls[0][0].index('--speed')+1] == '1.0'
         assert all('Private synthetic reply' not in arg for argv, _ in calls for arg in argv)
-        assert 'pitch=0.91700404' in calls[1][0][calls[1][0].index('-af')+1]
+        if pitch:
+            assert 'pitch=0.91700404' in calls[1][0][calls[1][0].index('-af')+1]
+        else:
+            assert len(calls) == 2 and 'ffmpeg' not in requested_tools
         assert calls[-1][0][0] == '/usr/bin/pw-play'
         assert not Path(calls[-1][0][-1]).exists()
     finally:
