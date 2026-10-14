@@ -7,6 +7,7 @@ import flet as ft
 from app.theme import button, heading, label, panel
 from app.tools import TOOLS
 from app.views.peter import PeterOrb
+from app.speech import conversation_parts
 
 
 def focus_groups(entries, now):
@@ -272,7 +273,7 @@ class PeterHomeView:
         except (OSError, ValueError):
             committed = set()
         controls = []
-        for message in messages:
+        for message in conversation_parts(messages):
             contents = [ft.Text("YOU" if message["role"] == "user" else "PETER", size=9,
                     weight=ft.FontWeight.W_600,
                     color=c["cyan"] if message["role"] == "user" else c["dim"]),

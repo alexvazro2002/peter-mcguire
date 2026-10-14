@@ -161,3 +161,11 @@ destination is verified private before push. The private repository is
 - George now uses natural pitch 0.0 and pace 1.0. The real local greeting sample contains 2.971 seconds of audio; generation took 2.527 seconds plus 0.745 seconds model load. No pitch filter runs at the default setting.
 - Gmail startup/search fetch metadata only. Sender prompts wait for the calendar speech and active-account checks; direct consent reads one bounded body. Queued headers and staged delivery survive crashes, while active consent is discarded on restart. Synthetic API tests covered cancellation, account changes, stale consent, failures, and checkpoint preservation.
 - Real Gmail authentication remains deferred; no real inbox was accessed in this update. Existing calendar, conversation and personal memory files were unchanged by source installation.
+
+## Sentence playback — 14 October 2026
+
+- Full source suite: 481 passed in 21.65 seconds. Additional assistant checks after the explicit read-only instruction passed (48 tests).
+- The real local British voice pipeline generated “Great choice, sir. You have three new messages. Do you want me to read them?” as three clips. First audio became ready at 2.057 seconds; simulated timed playback measured successive gaps of 0.302 and 0.302 seconds. The preview contains only synthetic example text.
+- One British model instance serves each reply, with generation overlapping playback and at most three unfinished clips in flight. Unit tests covered exact ordering, 0.3-second pauses, lookahead limits, long-sentence splitting, decimal/abbreviation boundaries, simultaneous synthesis/player cancellation, late HTTP cleanup, failures, atomic WAV publication and sentence bubbles with final-part source/undo controls.
+- The installed native app restarted with no latest-startup Python traceback and a healthy VoiceStudio API. Natural pitch and pace remain unchanged.
+- The supplied Google client was moved into Peter's private `.runtime/gmail/client.json` with mode 0600. The OAuth request uses only `gmail.readonly`; token checks reject broader scopes and the Gmail API adapter implements only GET. Google currently rejects sign-in until the account is added as a project test user. No real inbox was read during this validation.

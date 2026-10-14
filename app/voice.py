@@ -7,6 +7,7 @@ The single worker serializes requests and drops results from cancelled work.
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import math
 import queue
@@ -14,15 +15,19 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import wave
+from array import array
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
 from app.config import BASE_DIR, DATA_DIR
+from app.speech import speech_segments
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,9 @@ class VoiceController:
         self._active_cancel = threading.Event()
         self._record_stop = threading.Event()
         self._process = None
+        self._processes = set()
+        self._process_tasks = {}
+        self.sentence_pause = .3
         self._thread = threading.Thread(target=self._work, name="peter-voice", daemon=True)
         self._thread.start()
 
@@ -125,8 +133,8 @@ class VoiceController:
                 self._pending.get_nowait()
             except queue.Empty:
                 pass
-            process = self._process
-        if process is not None:
+            processes = list(self._processes)
+        for process in processes:
             self._stop_process(process)
         self._status("idle", "Voice stopped")
 
@@ -243,36 +251,33 @@ class VoiceController:
             candidates = [m for m in candidates if m.get("repo_id") == "KittenML/kitten-tts-mini-0.8"]
         if not any(m.get("installed") and m.get("supported", True) for m in candidates):
             raise VoiceError(f"VoiceStudio's {model} weights are not installed. Run install-voice.sh before speaking.")
-        self._status("thinking", "Generating local speech", cancelled)
-        # Respect the API's 4096-character limit without dropping a long answer.
-        remaining = text
-        with tempfile.TemporaryDirectory(prefix="peter-voice-") as directory:
-            audio = Path(directory) / "speech.wav"
-            while remaining:
-                split = min(4096, len(remaining))
-                if split < len(remaining):
-                    boundary = remaining.rfind(" ", 0, split)
-                    if boundary > 0:
-                        split = boundary
-                chunk, remaining = remaining[:split].strip(), remaining[split:].strip()
-                response = self._request(session, "POST", "/v1/audio/speech", cancelled, stream=True,
-                                         json=dict(model=model, input=chunk,
-                                                   voice=self.settings.get("voice_id", "expr-voice-2-m"),
-                                                   response_format="wav", speed=float(self.settings.get("voice_speed", 1.0))))
-                try:
-                    size = 0
-                    with audio.open("wb") as output:
-                        for block in response.iter_content(65536):
-                            self._check(cancelled)
-                            size += len(block)
-                            if size > 32 * 1024 * 1024:
-                                raise VoiceError("VoiceStudio returned an unexpectedly large speech file.")
-                            output.write(block)
-                finally:
-                    response.close()
-                self._validate_wav(audio)
-                self._status("speaking", "Peter is speaking", cancelled)
-                self._run_audio([player, str(audio)], cancelled, limit=180)
+        self._status("thinking", "Generating the first sentence", cancelled)
+        with self._speech_directory() as (directory, finished):
+            def produce(chunks, stop):
+                # The producer owns its session; playback never blocks generation.
+                with self._session_factory() as producer_session:
+                    producer_session.trust_env = False
+                    for index, chunk in enumerate(chunks):
+                        self._wait_for_space(directory, index, stop)
+                        audio = directory / f'{index:04d}.wav'
+                        partial = directory / f'{index:04d}.partial'
+                        response = self._request(producer_session, "POST", "/v1/audio/speech", stop, stream=True,
+                            json=dict(model=model, input=chunk, voice=self.settings.get("voice_id", "expr-voice-2-m"),
+                                      response_format="wav", speed=float(self.settings.get("voice_speed", 1.0))))
+                        try:
+                            size = 0
+                            with partial.open('wb') as output:
+                                for block in response.iter_content(65536):
+                                    self._check(stop)
+                                    size += len(block)
+                                    if size > 32 * 1024 * 1024:
+                                        raise VoiceError("VoiceStudio returned an unexpectedly large speech file.")
+                                    output.write(block)
+                        finally:
+                            response.close()
+                        self._validate_wav(partial)
+                        partial.replace(audio)
+            self._sentence_pipeline(text, directory, produce, player, cancelled, finished=finished)
 
     def _speak_british(self, text, player, cancelled):
         """Use the installed runtime's real British stock voice; keep synthesis cancellable."""
@@ -287,25 +292,127 @@ class VoiceController:
         ffmpeg = self._which("ffmpeg") if pitch else None
         if pitch and not ffmpeg:
             raise VoiceError("Install FFmpeg to apply Peter's deeper voice pitch.")
-        self._status("thinking", "Preparing Peter's British voice", cancelled)
-        with tempfile.TemporaryDirectory(prefix="peter-voice-") as directory:
-            directory = Path(directory)
-            content, original, audio = directory / "speech.txt", directory / "original.wav", directory / "speech.wav"
-            content.write_text(text, encoding="utf-8")
-            self._run_audio([str(python), str(BASE_DIR / "scripts" / "british_voice.py"),
-                             "--model-dir", str(models), "--text-file", str(content), "--output", str(original),
-                             "--voice", self.settings.get("voice_id", "bm_george"), "--speed", str(speed)],
-                            cancelled, limit=self.timeout, private=True)
-            self._validate_wav(original)
-            if pitch:
+        self._status("thinking", "Generating the first sentence", cancelled)
+        with self._speech_directory() as (directory, finished):
+            def produce(chunks, stop):
+                content = directory / 'sentences.json'
+                content.write_text(json.dumps(chunks), encoding='utf-8')
+                content.chmod(0o600)
+                self._run_audio([str(python), str(BASE_DIR / "scripts" / "british_voice.py"),
+                    "--model-dir", str(models), "--segments-file", str(content), "--output-dir", str(directory),
+                    "--voice", self.settings.get("voice_id", "bm_george"), "--speed", str(speed)],
+                    stop, limit=min(3600, self.timeout * len(chunks)), private=True)
+            def prepare(original):
+                if not pitch:
+                    return original
+                audio = directory / 'pitched.wav'
                 self._run_audio([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(original),
-                                 "-af", f"rubberband=tempo=1:pitch={2 ** (pitch / 12):.8f}:formant=preserved",
-                                 "-c:a", "pcm_s16le", str(audio)], cancelled, limit=30)
-                self._validate_wav(audio)
+                    "-af", f"rubberband=tempo=1:pitch={2 ** (pitch / 12):.8f}:formant=preserved",
+                    "-c:a", "pcm_s16le", str(audio)], cancelled, limit=30)
+                return audio
+            self._sentence_pipeline(text, directory, produce, player, cancelled, prepare=prepare, finished=finished)
+
+    @contextmanager
+    def _speech_directory(self):
+        temporary = tempfile.TemporaryDirectory(prefix='peter-voice-')
+        finished = threading.Event()
+        finished.set()
+        try:
+            yield Path(temporary.name), finished
+        finally:
+            if finished.is_set():
+                temporary.cleanup()
             else:
-                audio = original
-            self._status("speaking", "Peter is speaking", cancelled)
-            self._run_audio([player, str(audio)], cancelled, limit=180)
+                # A cancelled HTTP read may still be waiting on its finite
+                # timeout. Keep its private files alive until it exits, then erase.
+                def clean():
+                    finished.wait()
+                    temporary.cleanup()
+                threading.Thread(target=clean, name='peter-speech-cleanup', daemon=True).start()
+
+    def _wait_for_space(self, directory, index, cancelled):
+        while index >= 3 and not (directory / f'consumed-{index - 3}').exists():
+            self._check(cancelled)
+            cancelled.wait(.05)
+
+    def _sentence_pipeline(self, text, directory, produce, player, cancelled, *, prepare=lambda path: path, finished=None):
+        """One producer, one player: ordered clips, bounded lookahead and cancellable pauses."""
+        chunks, producer_stop = speech_segments(text), threading.Event()
+        if not chunks:
+            return
+        done, errors = finished or threading.Event(), queue.Queue()
+        done.clear()
+        def generate():
+            try:
+                produce(chunks, producer_stop)
+            except Exception as error:
+                errors.put(error)
+            finally:
+                done.set()
+        producer = threading.Thread(target=generate, name='peter-sentence-synthesis', daemon=True)
+        producer.start()
+        try:
+            for index, chunk in enumerate(chunks):
+                original = directory / f'{index:04d}.wav'
+                deadline = time.monotonic() + self.timeout
+                waiting_reported = False
+                while not original.exists():
+                    self._check(cancelled)
+                    if done.is_set():
+                        if not errors.empty():
+                            raise errors.get_nowait()
+                        raise VoiceError('Local speech stopped before the next sentence was ready.')
+                    if time.monotonic() > deadline:
+                        raise VoiceError('The next spoken sentence took too long to generate.')
+                    if index and not waiting_reported:
+                        self._status('thinking', 'Preparing the next sentence', cancelled)
+                        waiting_reported = True
+                    cancelled.wait(.05)
+                self._check(cancelled)
+                audio = prepare(original)
+                self._validate_wav(audio)
+                self._trim_silence(audio)
+                self._status('speaking', 'Peter is speaking', cancelled)
+                self._run_audio([player, str(audio)], cancelled, limit=180)
+                original.unlink(missing_ok=True)
+                if audio != original:
+                    audio.unlink(missing_ok=True)
+                (directory / f'consumed-{index}').touch(mode=0o600)
+                if index < len(chunks) - 1:
+                    cancelled.wait(self.sentence_pause)
+                    self._check(cancelled)
+            producer.join(timeout=1)
+            if not errors.empty():
+                raise errors.get_nowait()
+        finally:
+            producer_stop.set()
+            # Only synthesis subprocesses from this task are stopped here.
+            with self._lock:
+                owned = [p for p, event in self._process_tasks.items() if event is producer_stop]
+            for process in owned:
+                self._stop_process(process)
+            producer.join(timeout=min(2, self.timeout))
+
+    @staticmethod
+    def _trim_silence(path):
+        """Trim silent edge padding conservatively so the explicit gap stays natural."""
+        with wave.open(str(path), 'rb') as audio:
+            if audio.getsampwidth() != 2 or audio.getnchannels() != 1 or audio.getnframes() > audio.getframerate() * 180:
+                return
+            params, frames = audio.getparams(), audio.readframes(audio.getnframes())
+        samples = array('h', frames)
+        if sys.byteorder != 'little':
+            samples.byteswap()
+        block = max(1, params.framerate // 100)
+        active = [i for i in range(0, len(samples), block)
+                  if max(map(abs, samples[i:i + block]), default=0) > 48]
+        if not active:
+            return
+        keep = params.framerate // 40
+        first, last = max(0, active[0] - keep), min(len(samples), active[-1] + block + keep)
+        with wave.open(str(path), 'wb') as audio:
+            audio.setparams(params)
+            audio.writeframes(frames[first * 2:last * 2])
 
     @staticmethod
     def _validate_wav(path):
@@ -357,6 +464,8 @@ class VoiceController:
                                   stderr=errors, start_new_session=True)
             with self._lock:
                 self._process = process
+                self._processes.add(process)
+                self._process_tasks[process] = cancelled
             try:
                 deadline = time.monotonic() + limit
                 stopped = False
@@ -375,6 +484,8 @@ class VoiceController:
             finally:
                 self._stop_process(process, recording=recording)
                 with self._lock:
+                    self._processes.discard(process)
+                    self._process_tasks.pop(process, None)
                     if self._process is process:
                         self._process = None
 

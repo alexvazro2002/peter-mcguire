@@ -9,6 +9,7 @@ No Google desktop application is required. **Desktop app** is Google's name for 
 1. Open [Google Cloud Console](https://console.cloud.google.com/), sign in, and select or create a project.
 2. Enable the **Gmail API** for that project.
 3. Open **Google Auth Platform**. Configure the app name (Peter McGuire) and your support/contact email. Choose **External** for a personal Gmail account. In **Audience**, add your Gmail address as a test user while the app is in Testing.
+   If sign-in returns `403: access_denied` and says only approved testers can access Peter, add the exact signed-in Gmail address under **Audience → Test users**. In Spanish this is **Público → Usuarios de prueba → Agregar usuarios**. Keep the app in Testing for personal setup; requesting send permission does not resolve this error.
 4. In **Clients**, create an OAuth client. Choose **Desktop app** as its application type, then download its JSON configuration. This is configuration for Peter, not software to install.
 5. In Peter, open **Settings → Internet & Gmail**. Browse to the downloaded JSON, then choose **Connect Gmail**.
 6. Complete Google's browser sign-in and approve Peter’s **read-only Gmail** permission. Peter does not send, delete, mark read or modify email.
@@ -21,9 +22,9 @@ The Google account may require organization administrator approval. Google also 
 
 **Check new Gmail inbox messages at every launch** is enabled by default. It runs in the background independently of model and voice startup. The first successful connection records an inbox baseline and previews the last day’s inbox mail. Later launches retrieve new arrivals and messages newly moved into the inbox since the last successful check, including messages already read elsewhere.
 
-Digests stay written in Peter’s conversation. When voice is enabled, Peter gives a brief announcement when new mail exists. Use **Check inbox now**, or ask “Check my Gmail inbox” and “Read the first email”, for another check or a specific email.
+Startup retrieves message headers and saves a private queue. After your positive reply to Peter's readiness greeting and the calendar briefing, he asks “You have a new email from X, would you like me to read it for you, sir?” He fetches a body only after your direct approval. Use **Check inbox now**, or ask “Check my Gmail inbox”, for another check. Email offers and approved body readings stay written in the conversation.
 
-Gmail history is paginated and delivered in batches. A checkpoint advances after the digest is successfully saved; failed network requests or local saves do not skip messages. A pending batch survives a crash and its batch ID prevents duplicate conversation entries during replay. Account changes keep separate checkpoints. If Google expires its history cursor, Peter compares the current inbox against its saved IDs and labels the result as recovered sync.
+Gmail history is paginated and delivered in batches. A checkpoint advances after queued headers are successfully saved; failed network requests or local saves do not skip messages. Pending batches and queued headers survive a crash. Account changes keep separate checkpoints and sender offers only use the currently connected account. If Google expires its history cursor, Peter compares the current inbox against its saved IDs. A restarted session asks again before reading any queued body.
 
 Messages already deleted or archived before the check are outside the current inbox. Peter does not download attachments or load remote email images. It reads bounded plain message text. Email is never treated as authorization for workspace changes or external lookup.
 

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.voice import VoiceController, local_voice_url, spoken_text
+from app.speech import speech_segments
 from scripts.voice_service import runtime_command, service_environment
 
 
@@ -112,8 +113,9 @@ def test_startup_speech_uses_verified_api_and_erases_audio(speech_server, greeti
         controller.startup(greeting)
         wait_event(controller, "voice_status", "speaking")
         wait_event(controller, "voice_status", "idle")
-        payload = json.loads(capture["requests"][0][1])
-        assert payload == {"model": "kittentts", "input": expected, "voice": "expr-voice-2-m", "response_format": "wav", "speed": 1.0}
+        payloads = [json.loads(item[1]) for item in capture['requests']]
+        assert [payload['input'] for payload in payloads] == speech_segments(expected)
+        assert all(payload == {"model": "kittentts", "input": payload['input'], "voice": "expr-voice-2-m", "response_format": "wav", "speed": 1.0} for payload in payloads)
         assert capture["requests"][0][0] == "/v1/audio/speech"
         assert seen[0][0][0] == "/usr/bin/pw-play"
         assert not Path(seen[0][0][1]).exists()
@@ -157,6 +159,7 @@ def test_wrong_local_service_and_invalid_wav_never_play(speech_server):
     url, capture = speech_server
     seen = []
     controller = VoiceController({"voice_url": url}, which=lambda _: "/usr/bin/pw-play", popen=audio_process_factory(seen))
+    controller.sentence_pause = 0
     try:
         capture["paths"] = False
         controller.speak("Hello.")
@@ -191,6 +194,7 @@ def test_long_answers_respect_api_limit_without_losing_words(speech_server):
     url, capture = speech_server
     seen = []
     controller = VoiceController({"voice_url": url}, which=lambda _: "/usr/bin/pw-play", popen=audio_process_factory(seen))
+    controller.sentence_pause = 0
     try:
         text = "unbroken" * 700
         controller.speak(text)
@@ -198,7 +202,7 @@ def test_long_answers_respect_api_limit_without_losing_words(speech_server):
         wait_event(controller, "voice_status", "idle")
         chunks = [json.loads(body)["input"] for path, body, _ in capture["requests"] if path == "/v1/audio/speech"]
         assert "".join(chunks) == text and max(map(len, chunks)) <= 4096
-        assert len(seen) == 2
+        assert len(seen) == len(speech_segments(text))
         assert all(not Path(argv[1]).exists() for argv, _ in seen)
     finally:
         controller.close()
@@ -265,10 +269,10 @@ def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_pat
     calls = []
     def run(argv, cancel, **kwargs):
         calls.append((argv, kwargs))
-        if '--text-file' in argv:
-            textfile = Path(argv[argv.index('--text-file')+1])
-            assert textfile.read_text() == 'Private synthetic reply'
-            output = Path(argv[argv.index('--output')+1]); output.write_bytes(wav_bytes())
+        if '--segments-file' in argv:
+            textfile = Path(argv[argv.index('--segments-file')+1])
+            assert json.loads(textfile.read_text()) == ['Private synthetic reply']
+            output = Path(argv[argv.index('--output-dir')+1]) / '0000.wav'; output.write_bytes(wav_bytes())
         elif '-af' in argv:
             Path(argv[-1]).write_bytes(wav_bytes())
     controller._run_audio = run

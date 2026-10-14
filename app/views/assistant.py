@@ -5,6 +5,7 @@ import flet as ft
 
 from app.theme import button, field, heading, label, pill
 from app.views.model_picker import choose_model
+from app.speech import conversation_parts
 
 
 class AssistantView:
@@ -128,7 +129,7 @@ class AssistantView:
     def refresh_messages(self):
         c, controls = self.c, []
         committed = {r["id"] for r in self.app.assistant.history.recent(limit=200) if r["status"] == "committed"} if not self.app.assistant.warning else set()
-        for message in self.app.assistant.messages:
+        for message in conversation_parts(self.app.assistant.messages):
             user = message["role"] == "user"
             contents = [label("YOU" if user else "PETER", c, 10),
                         ft.Markdown(message["text"], selectable=True, auto_follow_links=False,

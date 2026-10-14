@@ -123,15 +123,57 @@ def synthesize(model_dir, text, output, *, speed=1.0, voice="bm_george", engine_
                 real_time_factor=round((generated - loaded) / duration, 3))
 
 
+def synthesize_segments(model_dir, manifest, directory, *, speed=1.0, voice="bm_george",
+                        engine_factory=create_engine, wait=time.sleep):
+    """Load once, publish each atomic WAV, and stay at most three clips ahead."""
+    model_dir = validate_request(model_dir, voice, speed)
+    manifest, directory = Path(manifest), Path(directory)
+    if manifest.stat().st_size > 64000 or not directory.is_dir() or directory.is_symlink():
+        raise BritishVoiceError("Invalid private sentence input or output directory.")
+    texts = json.loads(manifest.read_text(encoding='utf-8'))
+    if (not isinstance(texts, list) or not texts or len(texts) > 1000 or
+            any(not isinstance(text, str) or not text.strip() or len(text) > 4096 for text in texts) or
+            sum(map(len, texts)) > 32000):
+        raise BritishVoiceError("Invalid or oversized sentence list.")
+    loaded_at = time.monotonic()
+    engine = engine_factory(model_dir)
+    load_seconds = time.monotonic() - loaded_at
+    for index, text in enumerate(texts):
+        deadline = time.monotonic() + 300
+        while index >= 3 and not (directory / f'consumed-{index - 3}').exists():
+            if time.monotonic() > deadline:
+                raise BritishVoiceError("Speech playback stopped acknowledging sentences.")
+            wait(.05)
+        started = time.monotonic()
+        try:
+            result = engine.generate(text, sid=VOICE_IDS[voice], speed=speed)
+        except Exception as error:
+            raise BritishVoiceError("British sentence synthesis failed.") from error
+        write_wav(directory / f'{index:04d}.wav', result.samples, result.sample_rate)
+        print(json.dumps(dict(segment=index, duration_seconds=round(len(result.samples) / result.sample_rate, 3),
+                              generation_seconds=round(time.monotonic() - started, 3),
+                              load_seconds=round(load_seconds, 3) if index == 0 else 0)), flush=True)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True, type=Path)
-    parser.add_argument("--text-file", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--text-file", type=Path)
+    inputs.add_argument("--segments-file", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--voice", choices=tuple(VOICE_IDS), default="bm_george")
     args = parser.parse_args(argv)
     try:
+        if args.segments_file:
+            if args.output_dir is None or args.output is not None:
+                raise BritishVoiceError("Sentence synthesis requires its private output directory.")
+            synthesize_segments(args.model_dir, args.segments_file, args.output_dir, speed=args.speed, voice=args.voice)
+            return 0
+        if args.output is None:
+            raise BritishVoiceError("Choose a temporary output WAV path.")
         metadata = synthesize(args.model_dir, load_text(args.text_file), args.output,
                               speed=args.speed, voice=args.voice)
         print(json.dumps(metadata), flush=True)
