@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -125,7 +126,13 @@ class LMStudio:
                     str(int(self.settings.get("context_size", 8192))), "--yes"]
             # LM Studio's automatic placement is the default. Respect explicit full/CPU offload.
             layers = int(self.settings.get("gpu_layers", 0))
-            args += ["--gpu", "max" if layers == -1 else "off"] if layers in {0, -1} else []
+            ratio = self.settings.get("lmstudio_gpu_ratio")
+            if ratio is not None:
+                if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not math.isfinite(ratio) or not 0 <= ratio <= 1:
+                    raise ValueError("LM Studio GPU ratio must be between zero and one.")
+                args += ["--gpu", str(ratio), "--parallel", "1"]
+            else:
+                args += ["--gpu", "max" if layers == -1 else "off"] if layers in {0, -1} else []
             self.log("Loading your existing " + str(selected.get("displayName") or key) + " in LM Studio…")
             self.run(args, deadline, cancel)
             loaded = parse_models(self.run(["ps", "--json"], deadline, cancel))

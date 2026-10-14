@@ -401,3 +401,34 @@ def test_generic_chat_message_question_does_not_grant_gmail_access():
     assert latest_email_request('What is my last message overall?') is None
     with pytest.raises(ValueError,match='authorize email'):
         ExternalAccess(gmail=client).for_request('Show my last message in the notes.').latest_gmail()
+
+
+@pytest.mark.parametrize('message_text', ['Can you check my emails, please?', 'Hey Peter, can you check my Gmail?', 'Check my email inbox.', 'Check my e mails.'])
+def test_dictated_mail_request_variants_keep_read_only_permission(message_text):
+    from app.integrations import inbox_check_request
+    assert inbox_check_request(message_text)
+    calls=[]
+    gmail=SimpleNamespace(search=lambda *a,**kw: calls.append(kw) or dict(messages=[],account='person@example.test',account_messages_total=100))
+    ExternalAccess(gmail=gmail).for_request(message_text).search_gmail()
+    assert len(calls)==1
+
+
+@pytest.mark.parametrize('message_text', ["Hey Peter, what's the weather in Glasgow?",'Can you check the weather in London, please?', 'What is the weather like in Shanghai today?'])
+def test_weather_voice_variants_get_live_conditions_without_inference(tmp_path, monkeypatch, message_text):
+    calls=[]
+    monkeypatch.setattr(live_info,'current_weather',lambda city: calls.append(city) or dict(city=city,temperature_c=12,feels_like_c=11,wind_kmh=8,weather_code=3,url='https://example.com/weather'))
+    vault,calendar,_=stores(tmp_path)
+    runtime=SimpleNamespace(ensure=lambda: pytest.fail('Simple weather must not wait for inference'))
+    service=AssistantService(vault,calendar,runtime,tmp_path/'chat.json',external=ExternalAccess())
+    service.send(message_text)
+    result=service.events.get(timeout=3)
+    assert result['type']=='answer' and '12°C' in result['text'] and 'overcast' in result['text']
+    assert len(calls)==1 and calls[0] in message_text
+    assert service.messages[0]['text']==message_text
+
+
+def test_weather_without_location_asks_for_a_city_and_extra_actions_remain_in_engine():
+    from app.integrations import weather_request
+    result=ExternalAccess().quick_answer("What's the weather like today?",'Europe/London')
+    assert 'Which city' in result['text']
+    assert weather_request('Check weather in London and create a task') is None

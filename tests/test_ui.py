@@ -18,6 +18,7 @@ class VoiceDouble:
         self.startups += 1
         self.greeting = text
     def toggle_listen(self): self.listens += 1
+    def valid_event(self, event): return event.get('generation', 0) == getattr(self, 'generation', 0)
     def set_hands_free(self, enabled): self.hands_free = enabled
     def allow_hands_free(self, allowed): self.allowed = allowed
     def speak(self, text): self.spoken.append(text)
@@ -172,17 +173,18 @@ def test_empty_notes_workspace_stays_empty_across_navigation_and_last_deletion(p
     assert app.vault.names() == []
 
 
-def test_transcript_uses_existing_assistant_and_keeps_thinking_after_voice_idle(peter_ui, monkeypatch):
+@pytest.mark.parametrize('transcript', ['What is on my calendar?', 'Hey Peter, can you check my e mails, please?', "What's the weather in Glasgow?"])
+def test_transcript_uses_existing_assistant_and_keeps_thinking_after_voice_idle(peter_ui, monkeypatch, transcript):
     app, requests = peter_ui, []
     app.assistant_model_selected = True
     def send(text):
         requests.append(text)
         app.assistant.busy = True
     monkeypatch.setattr(app.assistant, "send", send)
-    app.voice.events.put(dict(type="transcript", text="What is on my calendar?"))
+    app.voice.events.put(dict(type="transcript", text=transcript))
     app.voice.events.put(dict(type="voice_status", state="idle", message="Recording finished"))
     one_poll(app, monkeypatch)
-    assert requests == ["What is on my calendar?"]
+    assert requests == [transcript]
     assert app.peter_state == "thinking" and app.home_view.state.value == "THINKING"
     assert app.home_view.input.disabled
 
@@ -553,3 +555,44 @@ def test_hands_free_toggle_persists_and_manual_controls_return(peter_ui):
     app.peter_state = 'armed'
     app.home_view.refresh()
     assert app.home_view.state.value == 'READY TO LISTEN'
+
+
+def test_live_spoken_reply_waits_for_playback_and_advances_only_with_speech(peter_ui, monkeypatch):
+    from app.voice import utterance_id
+    app=peter_ui
+    app.assistant.append(dict(role='user',text='Check the weather.'))
+    text='First spoken sentence. Second spoken sentence.'
+    app.assistant.events.put(dict(type='answer',text=text,sources=[],changes=[],operation_id=None))
+    one_poll(app,monkeypatch)
+    view=app.home_view
+    assert view.live_caption.value=='' and view.conversation_state['caption_next_at'] is None
+    assert view.previous_caption.value=='Check the weather.'
+    assert app.assistant.messages[-1]['text']==text
+    view.tick_conversation(now=100000)
+    assert view.live_caption.value==''
+    event=dict(text='First spoken sentence.',seconds=2,utterance_id=utterance_id(text))
+    assert view.speech_caption(event)
+    assert view.live_caption.value=='First spoken sentence.'
+    view.refresh()
+    assert view.live_caption.value=='First spoken sentence.'
+    event['text']='Second spoken sentence.'
+    assert view.speech_caption(event)
+    assert view.live_caption.value=='Second spoken sentence.'
+
+
+def test_failed_speech_displays_the_saved_reply_as_text(peter_ui, monkeypatch):
+    app=peter_ui
+    app.assistant.events.put(dict(type='answer',text='A saved answer.',sources=[],changes=[],operation_id=None))
+    one_poll(app,monkeypatch)
+    assert app.home_view.live_caption.value==''
+    app.voice.events.put(dict(type='voice_error',message='Audio playback failed.'))
+    one_poll(app,monkeypatch)
+    assert app.pending_speech_id is None and app.home_view.live_caption.value=='A saved answer.'
+
+
+def test_cancelled_queued_transcript_cannot_enter_a_new_request(peter_ui,monkeypatch):
+    app=peter_ui;sent=[];app.voice.generation=2
+    monkeypatch.setattr(app,'submit_peter',lambda text:sent.append(text))
+    app.voice.events.put(dict(type='transcript',text='A cancelled command.',generation=1))
+    one_poll(app,monkeypatch)
+    assert sent==[]

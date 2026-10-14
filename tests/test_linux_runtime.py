@@ -240,3 +240,21 @@ def test_full_assistant_tool_loop_fits_existing_8192_context_and_commits(tmp_pat
     assert client.calls == 2 and result["operation_id"]
     assert calendar.entries()[0]["title"] == "Check the workspace"
     assert calendar.entries()[0]["date"] is calendar.entries()[0]["time"] is None
+
+
+def test_lmstudio_ratio_preserves_memory_headroom_for_tool_requests(monkeypatch):
+    settings=deepcopy(DEFAULTS['library']);settings.update(gpu_layers=-1,lmstudio_gpu_ratio=.8)
+    manager=LMStudio(settings);calls=[]
+    def run(args,*unused):
+        calls.append(args)
+        if args==['server','status','--json']:return '{"running":true,"port":8081}'
+        if args==['ps','--json']:return json.dumps([gemma(True)] if any(c[0]=='load' for c in calls) else [])
+        if args==['ls','--json']:return json.dumps([gemma()])
+        return ''
+    monkeypatch.setattr(manager,'run',run);fake_api(monkeypatch)
+    manager.ensure(lambda: True)
+    load=next(c for c in calls if c[0]=='load')
+    assert load[load.index('--gpu')+1]=='0.8'
+    assert load[load.index('--parallel')+1]=='1'
+    assert load[load.index('--context-length')+1]=='8192'
+    assert not any(c[0]=='unload' for c in calls)

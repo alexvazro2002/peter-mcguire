@@ -82,10 +82,15 @@ def audio_process_factory(seen):
         returncode = 0
         def __init__(self, argv, **kwargs):
             seen.append((argv, kwargs))
-            if Path(argv[0]).name in {"pw-record", "arecord"}:
-                Path(argv[-1]).write_bytes(wav_bytes())
         def poll(self): return self.returncode
-    return Process
+    def factory(argv, **kwargs):
+        if Path(argv[0]).name in {"pw-record", "arecord"}:
+            import subprocess, sys
+            seen.append((argv, kwargs))
+            return subprocess.Popen([sys.executable, '-u', '-c',
+                "import sys;sys.stdout.buffer.write(b'\\0\\0'*16000);sys.stdout.flush()"], **kwargs)
+        return Process(argv, **kwargs)
+    return factory
 
 
 @pytest.mark.parametrize("url", ["https://example.com", "http://127.0.0.1@evil.test", "http://user:password@localhost:3900",
@@ -137,8 +142,7 @@ def test_recording_returns_transcript_for_existing_assistant(speech_server):
         path, body, content_type = capture["requests"][0]
         assert path == "/v1/audio/transcriptions" and content_type.startswith("multipart/form-data")
         assert b"whisper-1" in body and b"audio/wav" in body and b"RIFF" in body
-        assert seen[0][0][:4] == ["/usr/bin/pw-record", "--rate=16000", "--channels=1", "--format=s16"]
-        assert not Path(seen[0][0][-1]).exists()
+        assert seen[0][0] == ["/usr/bin/pw-record", "--raw", "--rate=16000", "--channels=1", "--format=s16", "-"]
     finally:
         controller.close()
 
@@ -209,31 +213,26 @@ def test_long_answers_respect_api_limit_without_losing_words(speech_server):
 
 
 def test_second_toggle_finishes_capture_before_transcribing(speech_server):
+    import subprocess, sys
     url, capture = speech_server
-    started, finished = threading.Event(), threading.Event()
-    seen = []
-    class Recorder:
-        returncode = None
-        def __init__(self, argv, **kwargs):
-            seen.append(argv)
-            Path(argv[-1]).write_bytes(wav_bytes())
-            started.set()
-        def poll(self): return self.returncode
-        def send_signal(self, value):
-            self.returncode = 0
-            finished.set()
-        def wait(self, timeout): return self.returncode
-    controller = VoiceController({"voice_url": url}, which=lambda _: "/usr/bin/pw-record", popen=Recorder)
+    processes = []
+    def record(argv, **kwargs):
+        process = subprocess.Popen([sys.executable, '-u', '-c',
+            "import sys,time;sys.stdout.buffer.write(b'\\0\\0'*16000);sys.stdout.flush();time.sleep(10)"], **kwargs)
+        processes.append(process)
+        return process
+    controller = VoiceController({"voice_url": url}, which=lambda _: "/usr/bin/pw-record", popen=record)
     try:
         controller.toggle_listen()
-        assert started.wait(2)
-        assert controller.state == "listening" and capture["requests"] == []
+        wait_event(controller, 'voice_status', 'listening')
+        assert capture['requests'] == []
         controller.toggle_listen()
         assert wait_event(controller, "transcript")["text"] == "Add a task for tomorrow."
         wait_event(controller, "voice_status", "idle")
-        assert finished.is_set() and not Path(seen[0][-1]).exists()
+        assert processes[0].poll() is not None
     finally:
         controller.close()
+
 
 
 def test_service_rejects_uninstalled_runtime_and_removes_desktop_parent_watchdog(tmp_path, monkeypatch):
@@ -297,7 +296,11 @@ def test_sentence_playback_emits_caption_text_duration_and_reply_identity(tmp_pa
     from app.voice import VoiceController,utterance_id
     calls=[]
     controller=VoiceController({})
-    controller._run_audio=lambda args,*a,**kw:calls.append(args)
+    def playback(args,*a,**kw):
+        calls.append(args)
+        assert not any(e['type']=='voice_caption' for e in list(controller.events.queue)) if len(calls)==1 else True
+        kw['on_start']()
+    controller._run_audio=playback
     controller.sentence_pause=0
     def produce(chunks,stop):
         for index,chunk in enumerate(chunks):
@@ -316,7 +319,7 @@ def test_sentence_playback_emits_caption_text_duration_and_reply_identity(tmp_pa
     finally:controller.close()
 
 
-def hands_free_capture(monkeypatch, captures, *, voiced=True):
+def hands_free_capture(monkeypatch, captures, *, voiced=True, trigger=None):
     import subprocess
     import sys
     from app.hands_free import UtteranceDetector
@@ -326,19 +329,23 @@ def hands_free_capture(monkeypatch, captures, *, voiced=True):
     def popen(argv, **kwargs):
         if Path(argv[0]).name in {'pw-record', 'arecord'}:
             # Real stdout pipe/select/cancellation; no microphone access.
-            process = subprocess.Popen([sys.executable, '-u', '-c',
-                'import sys,time;sys.stdout.buffer.write(' + ("b'\\0\\0'*480*10+b'\\x01\\0'*480*30+b'\\0\\0'*480*35" if voiced else "b'\\0\\0'*480*100") + ');sys.stdout.flush();time.sleep(10)'], **kwargs)
+            frames = ("b'\\0\\0'*480*10+b'\\x01\\0'*480*30+b'\\0\\0'*480*35" if voiced else "b'\\0\\0'*480*100")
+            script = "import sys,time;from pathlib import Path\n" + "clip=" + frames + "\n" + "sys.stdout.buffer.write(clip);sys.stdout.flush()\n"
+            script += "trigger=Path(" + repr(str(trigger)) + ") if " + repr(trigger is not None) + " else None\n"
+            script += "while True:\n if trigger is not None and trigger.exists():\n  trigger.unlink();sys.stdout.buffer.write(clip)\n else:sys.stdout.buffer.write(b'\\0\\0'*480)\n sys.stdout.flush();time.sleep(.03)"
+            process = subprocess.Popen([sys.executable, '-u', '-c', script], **kwargs)
             captures.append(process)
             return process
         return audio_process_factory([])(argv, **kwargs)
     return popen
 
 
-def test_hands_free_transcribes_one_utterance_and_waits_for_reply_before_rearming(speech_server, monkeypatch):
+def test_hands_free_transcribes_one_utterance_and_waits_for_reply_before_rearming(speech_server, monkeypatch, tmp_path):
     url, capture = speech_server
     processes = []
+    trigger=tmp_path/'next-utterance'
     controller = VoiceController(dict(voice_url=url, hands_free=True), which=lambda n: '/usr/bin/' + n,
-                                 popen=hands_free_capture(monkeypatch, processes))
+                                 popen=hands_free_capture(monkeypatch, processes, trigger=trigger))
     try:
         controller.allow_hands_free(True)
         assert wait_event(controller, 'voice_status', 'armed')['message'].startswith('Hands-free on')
@@ -346,7 +353,7 @@ def test_hands_free_transcribes_one_utterance_and_waits_for_reply_before_rearmin
         assert wait_event(controller, 'transcript')['text'] == 'Add a task for tomorrow.'
         wait_event(controller, 'voice_status', 'idle')
         time.sleep(.2)
-        assert len(processes) == 1 and processes[0].poll() is not None
+        assert len(processes) == 1 and processes[0].poll() is None
         assert len([row for row in capture['requests'] if row[0].endswith('transcriptions')]) == 1
         controller.speak('Your task is ready.')
         controller.allow_hands_free(True)  # UI may re-arm while speech is queued.
@@ -354,8 +361,9 @@ def test_hands_free_transcribes_one_utterance_and_waits_for_reply_before_rearmin
         assert len(processes) == 1
         wait_event(controller, 'voice_status', 'idle')
         wait_event(controller, 'voice_status', 'armed')
+        trigger.touch()
         assert wait_event(controller, 'transcript')['text'] == 'Add a task for tomorrow.'
-        assert len(processes) == 2
+        assert len(processes) == 1 and processes[0].poll() is None
     finally:
         controller.close()
     assert all(process.poll() is not None for process in processes)
@@ -397,4 +405,143 @@ def test_hands_free_microphone_failure_is_reported_once_without_restart_loop(spe
         time.sleep(.25)
         assert len(captures) == 1
     finally:
+        controller.close()
+
+
+def test_finishing_during_microphone_startup_waits_for_pcm_instead_of_empty_wav(speech_server):
+    import subprocess, sys
+    url, capture = speech_server
+    processes = []
+    def delayed(argv, **kwargs):
+        process = subprocess.Popen([sys.executable, '-u', '-c',
+            "import sys,time;time.sleep(.25);sys.stdout.buffer.write(b'\0\0'*16000);sys.stdout.flush();time.sleep(10)".replace('\0', '\\0')], **kwargs)
+        processes.append(process); return process
+    controller = VoiceController({'voice_url': url}, which=lambda _: '/usr/bin/pw-record', popen=delayed)
+    try:
+        controller.toggle_listen()
+        wait_event(controller, 'voice_status', 'thinking')
+        time.sleep(.08)
+        controller.toggle_listen()
+        assert controller.state == 'thinking'
+        wait_event(controller, 'voice_status', 'listening')
+        assert wait_event(controller, 'transcript')['text'] == 'Add a task for tomorrow.'
+        assert len(processes) == 1 and processes[0].poll() is not None
+        assert b'RIFF' in capture['requests'][0][1]
+    finally: controller.close()
+
+
+def test_unresponsive_microphone_times_out_instead_of_armed_forever(speech_server):
+    import subprocess, sys
+    url, _ = speech_server
+    processes = []
+    def empty(argv, **kwargs):
+        process = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(10)'], **kwargs)
+        processes.append(process); return process
+    controller = VoiceController({'voice_url': url, 'hands_free': True}, which=lambda _: '/usr/bin/pw-record', popen=empty)
+    controller.capture_start_timeout = .15
+    try:
+        controller.allow_hands_free(True)
+        assert 'not delivering audio' in wait_event(controller, 'voice_error')['message']
+        assert controller.state == 'error' and processes[0].poll() is not None
+    finally: controller.close()
+
+
+def test_switching_to_hands_free_stops_manual_recording_before_rearming(speech_server, monkeypatch):
+    url, _ = speech_server
+    processes = []
+    controller = VoiceController({'voice_url': url}, which=lambda n: '/usr/bin/' + n,
+                                 popen=hands_free_capture(monkeypatch, processes))
+    try:
+        controller.toggle_listen()
+        wait_event(controller, 'voice_status', 'listening')
+        controller.set_hands_free(True)
+        controller.allow_hands_free(True)
+        wait_event(controller, 'voice_status', 'armed')
+        assert len(processes) == 2 and processes[0].poll() is not None
+        assert wait_event(controller, 'transcript')['text'] == 'Add a task for tomorrow.'
+    finally: controller.close()
+
+
+def test_cancel_after_dequeue_prevents_the_old_task_from_starting(speech_server):
+    url,capture=speech_server
+    controller=VoiceController({'voice_url':url},which=lambda n:'/usr/bin/'+n,popen=audio_process_factory([]))
+    dequeued,release=threading.Event(),threading.Event()
+    original=controller._pending.get
+    def get(*args,**kw):
+        task=original(*args,**kw)
+        dequeued.set();release.wait(2)
+        return task
+    controller._pending.get=get
+    try:
+        time.sleep(.15)
+        controller.speak('A cancelled reply.')
+        assert dequeued.wait(2)
+        controller.cancel();release.set();time.sleep(.2)
+        assert capture['requests']==[]
+    finally:release.set();controller.close()
+
+
+def test_transcript_publication_rechecks_cancellation_and_marks_generation(speech_server, tmp_path):
+    from app.voice import _Cancelled
+    url,_=speech_server
+    c=VoiceController({'voice_url':url})
+    path=tmp_path/'capture.wav';path.write_bytes(wav_bytes())
+    cancelled=threading.Event();status=c._status
+    def cancel_at_status(state,message='',token=None):
+        status(state,message,token)
+        if message=='Speech recognized':cancelled.set()
+    c._status=cancel_at_status
+    try:
+        import requests
+        with requests.Session() as session:
+            with pytest.raises(_Cancelled):c._transcribe(session,path,cancelled)
+        assert not any(e['type']=='transcript' for e in list(c.events.queue))
+        previous={'type':'transcript','text':'An old voice command.','generation':c._generation}
+        assert c.valid_event(previous)
+        c.cancel()
+        assert not c.valid_event(previous)
+    finally:c.close()
+
+
+def test_cancel_clears_an_utterance_enqueued_while_waiting_for_capture_lock(speech_server):
+    url, _ = speech_server
+
+    class CaptureOnlyController(VoiceController):
+        def _work(self):
+            # Keep this test's captured utterance queued until cancellation.
+            pass
+
+    controller = CaptureOnlyController({'voice_url': url})
+    attempted = threading.Event()
+    original_lock = controller._lock
+
+    class CaptureLock:
+        def __enter__(self):
+            if threading.current_thread().name == 'test-voice-cancel':
+                attempted.set()
+            original_lock.acquire()
+            return self
+
+        def __exit__(self, *_):
+            original_lock.release()
+
+    controller._lock = CaptureLock()
+    cancellation = threading.Thread(target=controller.cancel, name='test-voice-cancel')
+    try:
+        controller._auto_allowed.set()
+        with controller._lock:
+            assert controller._microphone_ready()
+            cancellation.start()
+            assert attempted.wait(2)
+            # Capture was already inside the queueing lock when Cancel began.
+            controller._awaiting_transcript = True
+            controller._pending.put_nowait(('hands_free', b'fixture', threading.Event(), controller._generation))
+        cancellation.join(timeout=2)
+        assert not cancellation.is_alive()
+        assert controller._pending.empty()
+        assert not controller._awaiting_transcript
+        controller._auto_allowed.set()
+        assert controller._microphone_ready()
+    finally:
+        cancellation.join(timeout=2)
         controller.close()

@@ -193,3 +193,61 @@ A synthetic browser preview at 1000 × 680 verified that the smaller translucent
 previous message sits above the current caption, clicking it opens history, and
 turning hands-free off restores Speak to Peter. Live captions still fade after
 20 idle seconds; waiting for speech does not keep them visible indefinitely.
+
+## Voice repair and inference stability · 14 October 2026
+
+Both voice modes now capture raw PCM and build the transcription WAV in Python.
+“Listening” is shown only after samples arrive, preventing empty recordings when
+PipeWire takes time to start. Finish during startup waits for a minimum audio
+buffer; mode changes cancel the previous capture. Missing or stalled microphone
+audio produces a clear input-device error. Hands-free retries transient failures
+with a delay and stops after three failures rather than looping indefinitely.
+
+The Yeti Orb was confirmed as the user's microphone. The repaired native capture
+returned 16,384 valid frames in 2.25 seconds during a brief discarded audio check.
+Real local Whisper transcribed synthetic Gmail and Glasgow weather commands in
+both modes, and all four transcripts reached the actual read-only Gmail or live
+weather service successfully (1.45–1.93 seconds). No email bodies are in the
+validation report. Ordinary dictated “e mails”, “G mail”, Peter prefixes and
+polite commas are now recognised. Simple weather queries call the live service
+directly; a missing city requests clarification.
+
+The Gmail/weather error also reproduced a local Qwen inference-engine crash.
+Loading the same installed LM Studio Qwen model with 80% GPU placement and one
+parallel prediction left graphics-memory headroom; repeated multi-step weather
+and calendar requests then succeeded. Unsupported-option retries now require an
+explicit error identifying that option; model crashes and context overflow retain
+their actual error instead of issuing several misleading retries. The chosen
+model, 8,192-token context, voice pitch and speaking pace remain configured.
+
+Full regression: **593 tests passed** in the source validation environment.
+
+### Persistent capture and playback captions
+
+The microphone remains open across hands-free turns. A separate local capture
+thread discards samples during inference, transcription and playback rather than
+closing and reopening the audio device. Turning hands-free off or closing Peter
+stops the capture process. Controlled real-pipe tests verified multiple turns
+with one microphone process and no transcription during replies.
+
+The host's audio journal also reported ALSA USB allocation failures, affecting
+both the Yeti input and Razer output. The local audio configuration now uses the
+Yeti's Mono Input profile and Razer stereo output without its unused microphone
+interface. A reversible local WirePlumber rule uses 48 kHz, 16-bit Razer playback
+to reduce shared USB bandwidth. After reloading the session manager, the physical
+Yeti remained armed through eight listening/reply gates with one capture process
+and no audio errors. No microphone audio was saved or transcribed in that check.
+
+Spoken replies no longer rotate through their text while speech is generating.
+They wait for the first player process to start, then show that spoken sentence;
+the next caption arrives when its audio starts. Sentence synthesis still runs
+ahead during playback. Saved history retains the full response immediately, and
+muted replies remain ordinary text. Playback failure reveals the saved text.
+
+Cancellation invalidates queued voice work and transcript events before a new
+request begins. Publication and microphone gates share the same lock, preventing
+a cancelled utterance from starting later or leaving hands-free paused.
+Regression checks cover cancellation after dequeue, during transcript
+publication, and between microphone readiness and queue insertion.
+
+Final regression: **599 tests passed**.

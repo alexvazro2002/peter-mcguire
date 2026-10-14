@@ -24,7 +24,7 @@ DEFAULTS = {
     "notifications": {"enabled": False, "server_url": "https://ntfy.sh", "topic": "", "include_answer": False},
     "peter": {
         "enabled": True, "autostart": True, "speech_enabled": True, "startup_greeting": True,
-        "hands_free": True,
+        "hands_free": True, "microphone_target": "",
         "greeting": "Systems are ready. At your service.",
         "voice_url": "http://127.0.0.1:3900", "voice_model": "kokoro-onnx", "voice_id": "bm_george",
         "voice_speed": 1.15, "voice_pitch": 0.8, "british_voice_path": "",
@@ -37,7 +37,7 @@ DEFAULTS = {
         "embedding_model": "all-MiniLM-L6-v2", "offline_models": True,
         "model_path": "",
         "model_id": "gemma", "external_model": False, "projector_path": "", "enable_thinking": False,
-        "runtime_provider": "lmstudio", "lmstudio_model_key": "", "lmstudio_cli": "", "api_model": "",
+        "runtime_provider": "lmstudio", "lmstudio_gpu_ratio": None, "lmstudio_model_key": "", "lmstudio_cli": "", "api_model": "",
         "model_token_file": "",
         "server_executable": "", "server_url": "http://127.0.0.1:1234/v1",
         "context_size": 8192, "gpu_layers": -1, "startup_timeout": 180,

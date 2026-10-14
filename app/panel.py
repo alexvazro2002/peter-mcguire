@@ -16,7 +16,7 @@ from app.calendar_storage import CalendarStore
 from app.storage import Vault
 from app.assistant.service import AssistantService
 from app.notifications import Notifier
-from app.voice import VoiceController
+from app.voice import VoiceController, utterance_id
 from app.gmail import GmailController, GmailError
 from app.integrations import ExternalAccess
 from app.email_briefing import EmailBriefing
@@ -82,6 +82,7 @@ class Workspace:
         self.peter_model_status = "Local model connects when needed"
         self.peter_events, self.peter_started = queue.Queue(), False
         self.voice = VoiceController(self.cfg.get("peter", {}))
+        self.pending_speech_id = None
         self.root = ft.Container(expand=True)
         self.picker = ft.FilePicker(on_result=self.pick_result)
         self.pick_callback, self.export_content = None, None
@@ -126,6 +127,8 @@ class Workspace:
             except (OSError, ValueError) as error:
                 self.notify("Could not save Peter's greeting: " + str(error), True)
         if settings.get("enabled", True):
+            if greeting and settings.get("speech_enabled", True):
+                self.pending_speech_id = utterance_id(greeting)
             self.voice.startup(greeting)
         if not settings.get("autostart", True):
             if self.home_view and self.view == "home":
@@ -190,12 +193,20 @@ class Workspace:
             self.home_view.refresh()
 
     def cancel_peter(self):
+        self.release_pending_caption()
         self.voice.cancel()
         self.assistant.close()
         self.peter_state = "thinking" if self.assistant.busy else "idle"
         self.peter_status = "Cancelling current request…" if self.assistant.busy else "Ready when you are."
         if self.home_view and self.view == "home":
             self.home_view.refresh()
+
+    def release_pending_caption(self):
+        if self.pending_speech_id is not None:
+            self.pending_speech_id = None
+            if self.home_view:
+                self.home_view.conversation_state['live_signature'] = None
+                self.home_view._message_signature = None
 
     def reset_voice(self):
         self.voice.close()
@@ -486,6 +497,7 @@ class Workspace:
             self.notify("Could not save Peter's email prompt: " + str(error), True)
             return False
         if speech:
+            self.pending_speech_id = utterance_id(result["text"])
             self.voice.speak(result["text"])
         return True
 
@@ -601,7 +613,8 @@ class Workspace:
                     break
                 peter_changed = True
                 if event["type"] == "transcript":
-                    self.submit_peter(event["text"])
+                    if self.voice.valid_event(event):
+                        self.submit_peter(event["text"])
                 elif event['type'] == 'voice_caption':
                     if self.home_view:
                         self.home_view.speech_caption(event, update=self.view == 'home')
@@ -609,6 +622,7 @@ class Workspace:
                     self.peter_status = event.get("message", "")
                     self.peter_state = "thinking" if self.assistant.busy else event.get("state", "idle")
                 elif event["type"] == "voice_error":
+                    self.release_pending_caption()
                     self.peter_state, self.peter_status = "error", event["message"]
                     self.notify(event["message"], True)
             while True:
@@ -659,6 +673,7 @@ class Workspace:
                     if event["type"] == "answer":
                         self.peter_model_status = "Local model ready · Shared with AI Library"
                         if self.cfg.get("peter", {}).get("enabled", True) and self.cfg.get("peter", {}).get("speech_enabled", True):
+                            self.pending_speech_id = utterance_id(event["text"])
                             self.voice.speak(event["text"])
                         if event.get("briefing_complete"):
                             self.email_routine_started, self.email_prompt_pending = True, True

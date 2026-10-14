@@ -297,6 +297,7 @@ class PeterHomeView:
         saved = self.app.assistant.messages
         if self.app.assistant.busy or not saved or saved[-1]['role'] != 'assistant' or event['utterance_id'] != utterance_id(saved[-1]['text']):
             return False
+        self.app.pending_speech_id = None
         self.set_caption(event['text'], voice=True, seconds=event['seconds'])
         self.conversation_state.update(hidden=False, last_message_at=clock.monotonic(),
                                        live_signature=self.message_signature(saved[-1:]))
@@ -374,7 +375,12 @@ class PeterHomeView:
             live_signature = self.message_signature([latest]) if latest else None
             if live_signature != state['live_signature']:
                 state['live_signature'] = live_signature
-                self.set_caption(spoken_text(latest['text']) if latest and latest['role'] == 'assistant' else latest['text'] if latest else '')
+                if (latest and latest['role'] == 'assistant'
+                        and getattr(self.app, 'pending_speech_id', None) == utterance_id(latest['text'])):
+                    state.update(caption_pages=[], caption_index=0, caption_next_at=None, caption_voice=False)
+                    self.live_caption.value = ''
+                else:
+                    self.set_caption(spoken_text(latest['text']) if latest and latest['role'] == 'assistant' else latest['text'] if latest else '')
             elif state['caption_pages']:
                 if state.get('caption_render_limit') != self.caption_limit:
                     self.set_caption(state['caption_text'], voice=state['caption_voice'])

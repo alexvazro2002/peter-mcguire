@@ -19,7 +19,9 @@ def test_shared_transport_retries_only_unsupported_json_mode(monkeypatch):
     class Response:
         def __init__(self, status): self.status_code = status
         def raise_for_status(self): pass
-        def json(self): return {"choices": [{"message": {"content": '<think>private</think>{"answer":"Hello"}'}}]}
+        def json(self):
+            if self.status_code == 400: return {"error": "Unsupported response_format parameter"}
+            return {"choices": [{"message": {"content": '<think>private</think>{"answer":"Hello"}'}}]}
     def post(url, **kwargs):
         captured.append((url, dict(kwargs["json"])))
         return Response(400 if len(captured) == 1 else 200)
@@ -177,3 +179,14 @@ def test_invalid_sampling_settings_fail_before_request(name,value,monkeypatch):
     monkeypatch.setattr(requests,'post',lambda *a, **kw: pytest.fail('Invalid sampling parameters must not reach inference'))
     with pytest.raises(ValueError,match='sampling setting'):
         ChatClient(dict(server_url='http://localhost:8081/v1',**{name:value})).complete([])
+
+
+@pytest.mark.parametrize('message', ['Engine protocol predict request failed: fetch failed', 'Model is unloaded.', 'No models loaded'])
+def test_engine_crash_is_not_retried_as_an_unsupported_json_option(monkeypatch, message):
+    import requests
+    calls=[]
+    response=SimpleNamespace(status_code=400,json=lambda: {'error': message})
+    monkeypatch.setattr(requests,'post',lambda *a,**kw: calls.append(kw['json']) or response)
+    with pytest.raises(ValueError,match='local model stopped responding'):
+        ChatClient({'server_url':'http://localhost:8081/v1','runtime_provider':'lmstudio','api_model':'test'}).complete([],structured=True)
+    assert len(calls)==1

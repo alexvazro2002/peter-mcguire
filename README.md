@@ -23,14 +23,16 @@ run locally. No Gemma weights are included or downloaded.
 
 - The [Thinking Orbs](https://github.com/Jakubantalik/thinking-orbs) animation plays locally in the native client. Typed input, speech transcripts and Peter's replies stay visible on Home.
 - **Hands-free** starts enabled: speak normally and pause for about a second to
-  send. Peter pauses microphone capture during his reply and listens again
-  afterwards. Speech detection and transcription run locally; ambient audio is
+  send. Peter ignores microphone input during his reply and listens again
+  afterwards; one capture stream stays open to avoid device restarts. Speech detection and transcription run locally; ambient audio is
   not saved. Turn the toggle off for **Speak to Peter**, the bubble or
   **Ctrl+Space**, then click again to finish. **Stop** cancels the current request.
   Typed input uses the same Assistant. Peter gives one or two short sentences by
   default, with extended reasoning disabled and a 384-token reply budget.
 - The previous message appears above the current subtitle, smaller and translucent.
   Click it to open history at the bottom. Live captions fade after 20 idle seconds.
+  Spoken replies display each sentence when its audio starts; later sentences
+  generate during playback. Full replies remain available in history.
 - Ask **Open my latest email**, **Open it**, or **Open report.pdf**. Email links
   use the connected Gmail account; files open in their default application.
   Filenames are matched in Notes, Desktop, Documents and Downloads; an exact

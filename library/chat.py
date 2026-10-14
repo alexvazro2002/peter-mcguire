@@ -59,27 +59,42 @@ class ChatClient:
                 payload["response_format"] = {"type": "json_schema", "json_schema": {
                     "name": "peter_reply", "strict": True, "schema": response_schema or ASSISTANT_REPLY_SCHEMA}}
         url = self.settings["server_url"].rstrip("/") + "/chat/completions"
-        response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
-        if getattr(response, "status_code", 200) in {400, 422} and "reasoning_effort" in payload:
+        def post():
+            return requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
+
+        def rejection(response):
+            if getattr(response, "status_code", 200) not in {400, 422}:
+                return ""
             try:
-                error = response.json().get("error", "")
-                error = str(error).lower()
+                return str(response.json().get("error", "")).lower()
             except (ValueError, TypeError, AttributeError):
-                error = ""
-            if "reasoning_effort" in error or "reasoning" in error and any(word in error for word in ("unsupported", "unknown", "unexpected")):
-                payload.pop("reasoning_effort")
-                response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
-        # Some existing local servers lack response_format; the prompt still defines JSON.
-        if structured and getattr(response, "status_code", 200) in {400, 422}:
+                return ""
+
+        def unsupported(response, parameter):
+            detail = rejection(response)
+            return parameter in detail and any(word in detail for word in ("unsupported", "unknown", "unexpected", "not support", "not implemented", "unrecognized", "not one of"))
+
+        response = post()
+        if "reasoning_effort" in payload and unsupported(response, "reasoning"):
+            payload.pop("reasoning_effort")
+            response = post()
+        # Retry only an explicitly unsupported option. Engine crashes, context
+        # overflow and malformed requests must retain their original failure.
+        if structured and unsupported(response, "response_format"):
             if payload["response_format"]["type"] == "json_schema":
                 payload["response_format"] = {"type": "json_object"}
-                response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
-        if structured and getattr(response, "status_code", 200) in {400, 422}:
-            payload.pop("response_format")
-            response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
-        if getattr(response, "status_code", 200) in {400, 422} and "chat_template_kwargs" in payload:
+                response = post()
+            if unsupported(response, "response_format"):
+                payload.pop("response_format")
+                response = post()
+        if "chat_template_kwargs" in payload and unsupported(response, "chat_template_kwargs"):
             payload.pop("chat_template_kwargs")
-            response = requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
+            response = post()
+        detail = rejection(response)
+        if any(marker in detail for marker in ("engine protocol predict request failed", "model is unloaded", "no models loaded")):
+            raise ValueError("Peter's local model stopped responding. Try again so Peter can reconnect to the installed model.")
+        if "context" in detail and any(marker in detail for marker in ("overflow", "exceed", "too long", "maximum")):
+            raise ValueError("This request exceeds the local model's context. Ask for a smaller section or shorter request.")
         check_auth(response)
         response.raise_for_status()
         try:

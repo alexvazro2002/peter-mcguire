@@ -10,16 +10,44 @@ from app import live_info
 from app.email_briefing import header_message
 
 
+def request_text(request):
+    """Normalise common dictation spellings and an address to Peter only."""
+    text = request.replace('’', "'")
+    text = re.sub(r'\be[ -]+mails?\b', lambda m: 'emails' if m[0].lower().endswith('s') else 'email', text, flags=re.I)
+    text = re.sub(r'\bg[ -]+mail\b', 'Gmail', text, flags=re.I)
+    text = re.sub(r'^\s*(?:(?:hey|hello|hi|okay|ok)\s*[,.:]?\s*)?peter\s*[,.:]?\s*', '', text, flags=re.I)
+    text = re.sub(r'[,]\s*(please|for me)\s*([?.!]*)\s*$', r' \1\2', text, flags=re.I)
+    return text.strip()
+
+
+def weather_request(request):
+    text = request_text(request)
+    if re.search(r'\b(?:and|then)\s+(?:please\s+)?(?:create|add|save|remember|send|delete|open|check|read|schedule|tell|search)\b', text, re.I):
+        return None
+    match = re.fullmatch(
+        r"(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:what(?:'s| is)\s+(?:the\s+)?weather(?:\s+like)?|"
+        r"(?:check|tell me|show me)(?:\s+(?:the|today's|current))?\s+weather)"
+        r"(?:\s+(?:in|for|at)\s+(.+?))?(?:\s+(?:today|now|please))?[?.!]*", text, re.I)
+    return match.group(1).strip(' ,.!?') if match and match.group(1) else '' if match else None
+
+
+_WEATHER = {0: 'clear skies', 1: 'mostly clear skies', 2: 'partly cloudy skies', 3: 'overcast skies',
+            45: 'fog', 48: 'fog', 51: 'light drizzle', 53: 'drizzle', 55: 'heavy drizzle',
+            61: 'light rain', 63: 'rain', 65: 'heavy rain', 71: 'light snow', 73: 'snow',
+            75: 'heavy snow', 80: 'rain showers', 81: 'rain showers', 82: 'heavy showers',
+            95: 'thunderstorms', 96: 'thunderstorms with hail', 99: 'thunderstorms with hail'}
+
+
 def words(text):
     return set(re.findall(r"[^\W_]+", text.casefold()))
 
 
 def inbox_check_request(request):
     """Recognise inbox checks without swallowing extra actions or search filters."""
-    text = re.sub(r'^\s*peter\s*[,.:]?\s*', '', request, flags=re.I)
+    text = request_text(request)
     return bool(re.fullmatch(
         r"\s*(?:(?:can|could|would|will) you\s+)?(?:please\s+)?(?:check|look at)\s+"
-        r"(?:my\s+)?(?:(?:any\s+)?(?:new\s+)?(?:e-?mails?|mail)|(?:gmail\s+)?inbox|gmail)"
+        r"(?:my\s+)?(?:(?:any\s+)?(?:new\s+)?(?:e-?mails?|mail)|(?:(?:gmail|email)\s+)?inbox|gmail)"
         r"(?:\s+(?:and\s+)?(?:check\s+|look\s+)?(?:for|to see if (?:I have|there are))\s+"
         r"(?:(?:any|some)\s+)?(?:new\s+)?(?:e-?mails?|mail|messages))?"
         r"(?:\s+(?:now|please|for me))?[?.!]*\s*", text, re.I)) or bool(re.fullmatch(
@@ -29,7 +57,7 @@ def inbox_check_request(request):
 
 def latest_email_request(request):
     """Recognise latest-mail questions and keep compound actions/search filters."""
-    text = re.sub(r'^\s*peter\s*[,.:]?\s*', '', request.replace('’', "'"), flags=re.I)
+    text = request_text(request)
     if not re.search(r'\b(?:e-?mails?|mail|gmail|inbox)\b', text, re.I):
         return None
     match = re.fullmatch(
@@ -68,9 +96,18 @@ class ExternalAccess:
         self.gmail = gmail
 
     def for_request(self, request, conversation=()):
-        return RequestAccess(self, request, conversation)
+        return RequestAccess(self, request_text(request), conversation)
 
     def quick_answer(self, request, zone, *, cancel=None):
+        location = weather_request(request)
+        if location is not None:
+            if not location:
+                return dict(text='Which city should I check the weather for, sir?', changes=[], sources=[], operation_id=None)
+            result = self.for_request(request).current_weather(location)
+            condition = _WEATHER.get(result['weather_code'], 'current weather conditions')
+            return dict(text=f"It is {result['temperature_c']:g}°C in {result['city']}, with {condition}. "
+                        f"It feels like {result['feels_like_c']:g}°C, with wind at {result['wind_kmh']:g} kilometres per hour.",
+                        changes=[], sources=[dict(kind='web', url=result['url'], title='Open-Meteo · ' + result['city'])], operation_id=None)
         latest_scope = latest_email_request(request)
         if latest_scope:
             if self.gmail is None:
