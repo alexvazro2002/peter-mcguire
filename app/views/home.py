@@ -1,12 +1,14 @@
 """Peter's observatory, with live links to the existing workspace features."""
 from datetime import date, datetime, time, timedelta
+import time as clock
 
 import flet as ft
 
 from app.theme import button, heading, label, panel
 from app.tools import TOOLS
 from app.views.peter import PeterOrb
-from app.speech import conversation_parts
+from app.speech import conversation_parts, speech_segments
+from app.voice import spoken_text, utterance_id
 
 
 def focus_groups(entries, now):
@@ -62,7 +64,9 @@ class PeterHomeView:
         height = getattr(app.page, "height", None) or getattr(app.page.window, "height", 900) or 900
         compact = height < 780
         app.home_focus_minute = now.replace(second=0, microsecond=0)
-        self.orb = PeterOrb(app, size=160 if compact else 208)
+        self.orb = PeterOrb(app, size=136 if compact else 208)
+        width = getattr(app.page, 'width', None) or 1440
+        self.caption_limit = 96 if height < 720 or width < 1100 else 140 if compact else 220
         self.state = ft.Text("", size=10, color=c["cyan"], weight=ft.FontWeight.W_600,
                              text_align=ft.TextAlign.CENTER)
         self.state_icon = ft.Icon(ft.Icons.RADIO_BUTTON_CHECKED, size=13, color=c['cyan'])
@@ -79,6 +83,15 @@ class PeterHomeView:
         for mode in ('history', 'live'):
             self.conversation_state.setdefault(mode + '_scroll', -1.0)
             self.conversation_state.setdefault(mode + '_follow', True)
+        for key, value in dict(last_message_at=None, live_signature=None, caption_pages=[], caption_index=0,
+                               caption_next_at=None, caption_voice=False).items():
+            self.conversation_state.setdefault(key, value)
+        self.live_speaker = ft.Text('', size=10, color=c['dim'], text_align=ft.TextAlign.CENTER)
+        self.live_caption = ft.Text('', size=22 if compact else 26, color=c['text'],
+                                    text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.W_400)
+        self.live_sources = ft.Row([], alignment=ft.MainAxisAlignment.CENTER, wrap=True, spacing=4)
+        self.live_stage = ft.Column([self.live_speaker, self.live_caption, self.live_sources], expand=True,
+                                    alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6)
         self.conversation_frame = ft.Container(self.conversation, expand=True, opacity=0,
             animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
             padding=ft.padding.symmetric(horizontal=4, vertical=6))
@@ -222,7 +235,7 @@ class PeterHomeView:
         self.restore_scroll()
 
     def remember_scroll(self, event):
-        if self.app.home_view is not self:
+        if self.app.home_view is not self or not self.conversation_state['history']:
             return
         state = self.conversation_state
         mode = 'history' if state['history'] else 'live'
@@ -231,6 +244,9 @@ class PeterHomeView:
         state[mode + '_scroll'] = -1.0 if at_bottom else max(0.0, event.pixels)
 
     def restore_scroll(self, *, force=False):
+        if not self.conversation_state['history']:
+            self._needs_scroll = False
+            return
         if not force and not self._needs_scroll:
             return
         state = self.conversation_state
@@ -253,8 +269,52 @@ class PeterHomeView:
         except (OSError, ValueError, RuntimeError) as error:
             self.app.notify(str(error), True)
 
+    def set_caption(self, text, *, voice=False, seconds=None, now=None):
+        state = self.conversation_state
+        now = clock.monotonic() if now is None else now
+        pages = speech_segments(' '.join(str(text).split()), limit=self.caption_limit) or ['The full response is in history.']
+        state.update(caption_pages=pages, caption_index=0, caption_voice=voice,
+                     caption_text=text, caption_render_limit=self.caption_limit)
+        durations = ([max(.8, float(seconds) * len(page) / sum(map(len, pages))) for page in pages]
+                     if seconds is not None else [max(3.0, min(10.0, len(page) / 18)) for page in pages])
+        state['caption_durations'] = durations
+        state['caption_next_at'] = now + durations[0] if len(pages) > 1 else None
+        self.live_caption.value = pages[0]
+
+    def speech_caption(self, event, *, update=True):
+        saved = self.app.assistant.messages
+        if self.app.assistant.busy or not saved or saved[-1]['role'] != 'assistant' or event['utterance_id'] != utterance_id(saved[-1]['text']):
+            return False
+        self.set_caption(event['text'], voice=True, seconds=event['seconds'])
+        self.conversation_state.update(hidden=False, last_message_at=clock.monotonic(),
+                                       live_signature=self.message_signature(saved[-1:]))
+        if update and not self.conversation_state['history']:
+            self.live_stage.update()
+        return True
+
+    def tick_conversation(self, *, now=None):
+        state = self.conversation_state
+        now = clock.monotonic() if now is None else now
+        if state['history'] or state['hidden']:
+            return False
+        if state['caption_next_at'] is not None and now >= state['caption_next_at']:
+            state['caption_index'] += 1
+            index, pages = state['caption_index'], state['caption_pages']
+            self.live_caption.value = pages[index]
+            state['caption_next_at'] = now + state['caption_durations'][index] if index < len(pages) - 1 else None
+            state['last_message_at'] = now
+            self.live_stage.update()
+        if self.app.assistant.busy or self.app.peter_state in {'listening', 'thinking', 'speaking'}:
+            state['last_message_at'] = now
+        elif state['last_message_at'] is not None and now - state['last_message_at'] >= 20:
+            state['hidden'] = True
+            self.conversation_frame.opacity = 0
+            self.conversation_frame.update()
+            return True
+        return False
+
     def refresh_conversation(self):
-        """Keep this session's chat visible; older saved history stays on demand."""
+        """Current messages are centred captions; saved history has its own scroll."""
         saved, state = self.app.assistant.messages, self.conversation_state
         incoming = self.message_signature(saved)
         if incoming != state["seen"]:
@@ -276,6 +336,7 @@ class PeterHomeView:
                 if state["hidden"]:
                     state["recent_start"] = common
                 state["hidden"] = False
+                state['last_message_at'] = clock.monotonic()
             else:
                 state["recent_start"] = min(state["recent_start"], len(saved))
                 if not saved:
@@ -290,7 +351,24 @@ class PeterHomeView:
         mode = 'history' if state['history'] else 'live'
         self._needs_scroll = self._needs_scroll or state[mode + '_follow']
         self.conversation_frame.opacity = 1 if state["history"] or not state["hidden"] and messages else 0
+        self.conversation_frame.content = self.conversation if state['history'] else self.live_stage
         c = self.c
+        if not state['history']:
+            latest = saved[-1] if saved else None
+            live_signature = self.message_signature([latest]) if latest else None
+            if live_signature != state['live_signature']:
+                state['live_signature'] = live_signature
+                self.set_caption(spoken_text(latest['text']) if latest and latest['role'] == 'assistant' else latest['text'] if latest else '')
+            elif state['caption_pages']:
+                if state.get('caption_render_limit') != self.caption_limit:
+                    self.set_caption(state['caption_text'], voice=state['caption_voice'])
+                self.live_caption.value = state['caption_pages'][state['caption_index']]
+            self.live_speaker.value = 'YOU' if latest and latest['role'] == 'user' else 'PETER'
+            self.live_caption.color = c['cyan'] if latest and latest['role'] == 'user' else c['text']
+            self.live_sources.controls = [ft.TextButton('Open email' if source['kind'] == 'email' else 'Open note' if source['kind'] == 'note' else 'Open source', icon=ft.Icons.NORTH_EAST,
+                on_click=lambda _, item=source: self.source(item), style=ft.ButtonStyle(color=c['cyan']))
+                for source in (latest or {}).get('sources', [])[:1]]
+            return
         try:
             committed = {record["id"] for record in self.app.assistant.history.recent(limit=200)
                          if record["status"] == "committed"}
@@ -301,7 +379,7 @@ class PeterHomeView:
             contents = [ft.Text("YOU" if message["role"] == "user" else "PETER", size=9,
                     weight=ft.FontWeight.W_600,
                     color=c["cyan"] if message["role"] == "user" else c["dim"]),
-                        ft.Text(message["text"], size=12, color=c["text"], selectable=True)]
+                        ft.Text(message["text"], size=14, color=c["text"], selectable=True)]
             if message.get("sources"):
                 contents.append(ft.Row([ft.TextButton(source.get("title") or source.get("name") or source.get("path") or source.get("date") or
                     ("Memory" if source["kind"] == "memory" else "Source"), icon=ft.Icons.NORTH_EAST,

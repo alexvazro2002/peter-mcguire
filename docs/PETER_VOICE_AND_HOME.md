@@ -8,7 +8,9 @@ Speech now uses a sentence queue. The British voice model loads once per reply, 
 
 Peter’s instructions require British English, direct short answers, a calm formal manner and restrained dry wit. They discourage excitement, filler, flattery and repetitive apologies. The startup greeting follows the local time: “Good morning/afternoon/evening, sir. Ready for today?” A positive reply starts the calendar briefing. The selected reasoning model remains the existing LM Studio model.
 
-The duplicated Peter sidebar item is removed. Home keeps this session's typed and spoken conversation visible as it arrives. **Show history** opens the saved conversation at the newest messages; **Hide** returns to the live session. Each mode remembers its scroll position during navigation, resizing and periodic Home refreshes. New messages follow the bottom when you are already there, and leave your position alone while you browse earlier messages. A new application launch starts a new live session without deleting saved messages. Source buttons and Undo remain available.
+The duplicated Peter sidebar item is removed. Home shows the current typed request or spoken answer as large, centred subtitles beneath the orb. There are no chat cards or scrollbar in the live display. Long text advances through bounded captions; speech captions follow the actual sentence being played and divide long clips over their measured duration. The current caption fades after twenty idle seconds; listening, thinking and speech keep it visible. Full written replies remain saved.
+
+**Show history** opens the saved conversation at the newest messages, with readable 14-point text. History remembers its position across navigation, resizing and periodic Home refreshes. **Hide** returns to the live caption. Source buttons, Gmail links and Undo remain available in history; the current live message also exposes its primary source link. The British George voice retains the requested 1.15× speed and +0.8 semitone pitch adjustment.
 
 ## Installation
 

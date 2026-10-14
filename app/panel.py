@@ -590,6 +590,9 @@ class Workspace:
                 peter_changed = True
                 if event["type"] == "transcript":
                     self.submit_peter(event["text"])
+                elif event['type'] == 'voice_caption':
+                    if self.home_view:
+                        self.home_view.speech_caption(event, update=self.view == 'home')
                 elif event["type"] == "voice_status":
                     self.peter_status = event.get("message", "")
                     self.peter_state = "thinking" if self.assistant.busy else event.get("state", "idle")
@@ -722,6 +725,7 @@ class Workspace:
                 if self.view == "home" and self.home_view:
                     if peter_changed:
                         self.home_view.refresh()
+                    self.home_view.tick_conversation()
                 if changed and self.library_view and self.view == "library":
                     if chat_changed:
                         self.library_view.refresh_messages()

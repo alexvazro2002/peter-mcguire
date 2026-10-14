@@ -155,6 +155,7 @@ def message_data(message, *, account=None, headers_only=False):
         received = int(message.get("internalDate", 0))
     except (ValueError, TypeError):
         received = 0
+    view = next((name.casefold() for name in ('INBOX', 'SPAM', 'TRASH') if name in message.get('labelIds', [])), 'all')
     return dict(id=message_id, thread_id=_clean(message.get("threadId"), 128),
                 sender=headers.get("from", "Unknown sender"), subject=headers.get("subject", "(No subject)"),
                 date=headers.get("date", ""), received_ms=received,
@@ -162,10 +163,11 @@ def message_data(message, *, account=None, headers_only=False):
                 body=_clean("\n".join(plain or rich), 16000),
                 body_truncated=bool(body_limits) or len("\n".join(plain or rich).strip()) > 16000,
                 unread="UNREAD" in message.get("labelIds", []),
+                folders=[name for name in ("INBOX", "SPAM", "TRASH", "SENT", "DRAFT") if name in message.get("labelIds", [])],
                 source="gmail", untrusted=True,
                 metadata_only=bool(headers_only),
-                url="https://mail.google.com/mail/u/?" + urlencode({"authuser": account}) + "#inbox/" + message_id
-                    if account else "https://mail.google.com/mail/#inbox/" + message_id)
+                url="https://mail.google.com/mail/u/?" + urlencode({"authuser": account}) + '#' + view + '/' + message_id
+                    if account else 'https://mail.google.com/mail/#' + view + '/' + message_id)
 
 
 def _message_id(value):
@@ -216,6 +218,7 @@ class GmailClient:
         self._session_factory, self._clock, self._browser_open = session_factory, clock, browser_open
         self._lock = threading.RLock()
         self._token = None
+        self._profile_totals = {}
 
     def _safe_files(self):
         for path in (self.client_file, self.token_file, self.state_file):
@@ -419,12 +422,18 @@ class GmailClient:
             raise GmailError("The Gmail account changed. Connect Gmail again before checking the inbox.")
         if not str(profile.get("historyId", "")).isdigit():
             raise GmailError("Gmail returned no valid inbox checkpoint.")
+        self._profile_totals = {name: profile[name] for name in ('messagesTotal', 'threadsTotal')
+                                if type(profile.get(name)) is int and profile[name] >= 0}
         return account, str(profile["historyId"])
 
-    def _ids(self, session, *, query=None, cancel=None, limit=None):
+    def _ids(self, session, *, query=None, cancel=None, limit=None, scope="inbox"):
+        if scope not in {"inbox", "all"}:
+            raise GmailError("Choose inbox or all mail for the Gmail search scope.")
         ids, page, pages = [], None, set()
         while True:
-            params = {"labelIds": "INBOX", "maxResults": min(500, limit or 500), "includeSpamTrash": "false"}
+            params = {"maxResults": min(500, limit or 500), "includeSpamTrash": "true" if scope == "all" else "false"}
+            if scope == "inbox":
+                params["labelIds"] = "INBOX"
             if query:
                 params["q"] = query
             if page:
@@ -470,21 +479,25 @@ class GmailClient:
         message = self._api(session, "/messages/" + _message_id(message_id), params=params, cancel=cancel)
         return message, message_data(message, account=self._credentials()[1]["account"], headers_only=headers_only)
 
-    def search(self, query="", *, limit=10, cancel=None):
+    def search(self, query="", *, limit=10, cancel=None, scope="inbox"):
         if not isinstance(query, str) or len(query) > 1000:
             raise GmailError("Enter a Gmail inbox search of at most 1,000 characters.")
         with self._lock, self._session_factory() as session:
             account, _ = self._profile(session, cancel)
-            ids = self._ids(session, query=query.strip(), limit=max(1, min(50, int(limit))), cancel=cancel)
+            ids = self._ids(session, query=query.strip(), limit=max(1, min(50, int(limit))), cancel=cancel, scope=scope)
             messages = [self._read(session, message_id, cancel, headers_only=True)[1] for message_id in ids]
-            return dict(account=account, messages=messages, source="gmail", untrusted=True)
+            messages.sort(key=lambda row: row['received_ms'], reverse=True)
+            return dict(account=account, messages=messages, scope=scope,
+                        account_messages_total=self._profile_totals.get('messagesTotal'), source="gmail", untrusted=True)
+
+    def latest(self, *, scope="all", cancel=None):
+        """Newest received mail, including archived mail, without an invented date."""
+        return self.search("-in:sent -in:drafts", limit=1, scope=scope, cancel=cancel)
 
     def read(self, message_id, *, cancel=None):
         with self._lock, self._session_factory() as session:
             account, _ = self._profile(session, cancel)
             message, data = self._read(session, message_id, cancel)
-            if "INBOX" not in message.get("labelIds", []):
-                raise GmailError("That message is no longer in the Gmail inbox.")
             return dict(account=account, message=data, source="gmail", untrusted=True)
 
     def sync_new(self, *, cancel=None, batch_size=50):

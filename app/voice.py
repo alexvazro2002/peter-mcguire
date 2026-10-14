@@ -7,6 +7,7 @@ The single worker serializes requests and drops results from cancelled work.
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
 import logging
 import math
@@ -63,6 +64,10 @@ def spoken_text(value):
     text = re.sub(r"(?m)^\s*(?:#{1,6}\s+|[-*]\s+)", "", text)
     text = re.sub(r"[`*_]", "", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def utterance_id(text):
+    return hashlib.sha256(spoken_text(text).encode('utf-8')).hexdigest()
 
 
 class VoiceController:
@@ -373,6 +378,12 @@ class VoiceController:
                 self._validate_wav(audio)
                 self._trim_silence(audio)
                 self._status('speaking', 'Peter is speaking', cancelled)
+                with wave.open(str(audio), 'rb') as clip:
+                    duration = clip.getnframes() / clip.getframerate()
+                with self._lock:
+                    self._check(cancelled)
+                    self.events.put(dict(type='voice_caption', text=chunk, seconds=duration,
+                                         utterance_id=utterance_id(text), index=index, total=len(chunks)))
                 self._run_audio([player, str(audio)], cancelled, limit=180)
                 original.unlink(missing_ok=True)
                 if audio != original:

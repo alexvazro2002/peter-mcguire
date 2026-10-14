@@ -235,30 +235,39 @@ def test_home_displays_typed_and_transcribed_messages_while_request_is_pending(p
     monkeypatch.setattr(app.assistant, 'send', send)
     app.home_view.input.value = 'A typed message'
     app.home_view.send(None)
-    assert app.home_view.conversation.controls[-1].content.controls[1].value == 'A typed message'
+    assert app.home_view.live_caption.value == 'A typed message'
     app.assistant.busy = False
     app.voice.events.put(dict(type='transcript', text='A spoken message'))
     one_poll(app, monkeypatch)
-    assert app.home_view.conversation.controls[-1].content.controls[1].value == 'A spoken message'
-    assert len(app.home_view.conversation.controls) == 2
+    assert app.home_view.live_caption.value == 'A spoken message'
+    assert app.home_view.live_stage.scroll is None
     assert [message['text'] for message in app.assistant.messages] == ['A typed message', 'A spoken message']
 
 
-def test_home_live_conversation_remains_visible_and_keeps_current_session(peter_ui, monkeypatch):
-    app=peter_ui
-    app.assistant.append(dict(role='user',text='Current request'))
-    app.home_view.refresh_conversation()
-    app.assistant.append(dict(role='assistant',text='Current reply'))
-    app.home_view.refresh_conversation()
+def test_live_caption_fades_after_twenty_idle_seconds_and_history_remains(peter_ui,monkeypatch):
+    from app.views import home
+    app=peter_ui;now=[100.0]
+    monkeypatch.setattr(home.clock,'monotonic',lambda:now[0])
+    app.assistant.append(dict(role='assistant',text='Ready for today?'))
+    view=app.home_view;view.refresh()
+    assert view.live_caption.value=='Ready for today?' and view.conversation_frame.opacity==1
+    assert view.live_caption.size>=22 and view.live_caption.text_align==ft.TextAlign.CENTER
+    assert view.live_stage.scroll is None
+    assert not view.tick_conversation(now=119.9)
+    app.peter_state='speaking'
+    assert not view.tick_conversation(now=125)
+    app.peter_state='idle'
+    assert not view.tick_conversation(now=144.9)
+    assert view.tick_conversation(now=145) and view.conversation_frame.opacity==0
+    assert len(app.assistant.messages)==1
+    view.toggle_history(None)
+    assert view.conversation_frame.opacity==1 and not view.tick_conversation(now=10000)
+    assert len(view.conversation.controls)==1
+    now[0]=200
+    view.toggle_history(None)
     app.assistant.append(dict(role='user',text='Next request'))
-    app.home_view.refresh_conversation()
-    assert app.home_view.conversation_frame.opacity==1 and len(app.home_view.conversation.controls)==3
-    app.navigate('tools')
-    app.navigate('home')
-    assert app.home_view.conversation_frame.opacity==1 and len(app.home_view.conversation.controls)==3
-    app.home_view.toggle_history(None)
-    app.home_view.toggle_history(None)
-    assert app.home_view.conversation_frame.opacity==1 and len(app.home_view.conversation.controls)==3
+    view.refresh()
+    assert view.conversation_frame.opacity==1 and view.live_caption.value=='Next request'
 
 
 def test_home_history_toggle_survives_navigation_and_does_not_expire(peter_ui):
@@ -282,7 +291,7 @@ def test_home_history_toggle_survives_navigation_and_does_not_expire(peter_ui):
     app.assistant.messages.append(dict(role='user', text='New message'))
     app.home_view.refresh_conversation()
     assert app.home_view.conversation_frame.opacity == 1
-    assert app.home_view.conversation.controls[0].content.controls[1].value == 'New message'
+    assert app.home_view.live_caption.value == 'New message'
 
 
 def test_home_source_and_undo_actions_work_without_conversation_tab(peter_ui):
@@ -295,6 +304,7 @@ def test_home_source_and_undo_actions_work_without_conversation_tab(peter_ui):
     operation = transaction.commit('Synthetic Home undo check')
     app.assistant.append(dict(role='assistant', text='Saved.', sources=[dict(kind='note', name='Home action check')], operation_id=operation))
     app.home_view.refresh_conversation()
+    app.home_view.toggle_history(None)
     message = app.home_view.conversation.controls[-1].content.controls
     source_button, undo_button = message[2].controls[0], message[3]
     assert not undo_button.disabled
@@ -465,24 +475,20 @@ def test_history_opens_at_bottom_and_restores_browsing_position(peter_ui,monkeyp
     assert jumps[-1]==dict(offset=720,duration=0)
 
 
-def test_live_scroll_position_stays_put_until_user_returns_to_bottom(peter_ui,monkeypatch):
-    app=peter_ui;jumps=[]
-    monkeypatch.setattr(ft.Column,'scroll_to',lambda self,**kw:jumps.append(kw))
-    app.assistant.messages.extend([dict(role='user',text='First message'),dict(role='assistant',text='First reply')])
+def test_live_caption_pages_long_replies_without_scroll_or_lost_words(peter_ui,monkeypatch):
+    from app.views import home
+    app=peter_ui;now=[100.0]
+    monkeypatch.setattr(home.clock,'monotonic',lambda:now[0])
+    text=' '.join('word'+str(i) for i in range(100))
+    app.assistant.append(dict(role='assistant',text=text))
     view=app.home_view;view.refresh()
-    assert jumps[-1]['offset']==-1
-    view.remember_scroll(SimpleNamespace(pixels=100,max_scroll_extent=1500))
-    before=len(jumps)
-    app.assistant.messages.append(dict(role='user',text='Another message'))
-    view.refresh()
-    assert len(jumps)==before and view.conversation_state['live_scroll']==100
-    app.navigate('tools');app.navigate('home')
-    app.home_view.conversation.did_mount()
-    assert jumps[-1]['offset']==100
-    app.home_view.remember_scroll(SimpleNamespace(pixels=1500,max_scroll_extent=1500))
-    app.assistant.messages.append(dict(role='assistant',text='Another reply'))
-    app.home_view.refresh()
-    assert jumps[-1]['offset']==-1
+    state=view.conversation_state
+    assert len(state['caption_pages'])>1 and view.live_stage.scroll is None
+    shown=[view.live_caption.value]
+    while state['caption_next_at'] is not None:
+        now[0]=state['caption_next_at'];view.tick_conversation(now=now[0]);shown.append(view.live_caption.value)
+    assert ' '.join(shown)==text
+    assert app.assistant.messages[-1]['text']==text
 
 
 def test_live_session_does_not_expose_old_history_when_store_rolls(peter_ui):
@@ -493,5 +499,26 @@ def test_live_session_does_not_expose_old_history_when_store_rolls(peter_ui):
     build_home(app)
     app.assistant.append(dict(role='assistant',text='Current greeting'))
     app.home_view.refresh_conversation()
-    assert len(app.home_view.conversation.controls)==1
-    assert app.home_view.conversation.controls[0].content.controls[1].value=='Current greeting'
+    assert app.home_view.live_caption.value=='Current greeting'
+    assert len(app.assistant.messages)==200
+
+
+def test_live_subtitle_tracks_spoken_sentence_and_rejects_stale_audio(peter_ui):
+    from app.voice import utterance_id
+    app=peter_ui;full='First sentence. Second sentence.'
+    app.assistant.append(dict(role='assistant',text=full));view=app.home_view;view.refresh()
+    event=dict(text='Second sentence.',seconds=3,utterance_id=utterance_id(full))
+    assert view.speech_caption(event) and view.live_caption.value=='Second sentence.'
+    view.refresh();assert view.live_caption.value=='Second sentence.'
+    app.assistant.append(dict(role='user',text='Another request'));view.refresh()
+    assert not view.speech_caption(event) and view.live_caption.value=='Another request'
+
+
+def test_caption_voice_state_survives_home_navigation(peter_ui):
+    from app.voice import utterance_id
+    app=peter_ui;full='First sentence. Second sentence.'
+    app.assistant.append(dict(role='assistant',text=full));app.home_view.refresh()
+    app.navigate('tools')
+    assert app.home_view.speech_caption(dict(text='Second sentence.',seconds=3,utterance_id=utterance_id(full)),update=False)
+    app.navigate('home')
+    assert app.home_view.live_caption.value=='Second sentence.'

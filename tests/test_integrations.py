@@ -157,7 +157,7 @@ def fake_mail_client(calls, *, account='person@example.test', body='The offer en
         calls.append(id)
         return dict(account=account, message=message)
     return SimpleNamespace(status=lambda: dict(connected=True, account=account), read=read,
-                           search=lambda query, **kw: dict(account=account, messages=[message]))
+                           search=lambda query, **kw: dict(account=account, messages=[message]), latest=lambda **kw: dict(account=account,messages=[message]))
 
 
 @pytest.mark.parametrize('message_text', ['Read through it and let me know what it says.',
@@ -337,3 +337,67 @@ def test_new_email_check_uses_checkpoint_and_real_latest_header(tmp_path):
 def test_inbox_phrase_matcher_preserves_compound_actions_and_filters(message_text):
     from app.integrations import inbox_check_request
     assert not inbox_check_request(message_text)
+
+
+@pytest.mark.parametrize('message_text', ["What's my last email altogether?",'What is my latest email overall?',
+    'Peter, what is the most recent email across all my folders?',"What’s my newest email?",'Can you show me my last email ever?'])
+def test_latest_mail_variants_retrieve_all_mail_without_model(tmp_path,message_text):
+    calls=[];client=fake_mail_client([])
+    original=client.latest
+    def latest(**kw):calls.append(kw);return original(**kw)
+    client.latest=latest
+    runtime=SimpleNamespace(ensure=lambda:pytest.fail('Latest-mail questions must use verified headers'))
+    vault,calendar,_=stores(tmp_path)
+    service=AssistantService(vault,calendar,runtime,tmp_path/'chat.json',external=ExternalAccess(gmail=client))
+    service.send(message_text);answer=service.events.get(timeout=2)
+    assert answer['type']=='answer' and 'Example Bank' in answer['text']
+    assert calls[0]['scope']=='all' and answer['sources'][0]['id']=='abc123'
+    assert 'no emails' not in answer['text']
+
+
+def test_latest_empty_result_does_not_claim_account_is_empty():
+    client=SimpleNamespace(latest=lambda **kw:dict(account='person@example.test',messages=[]))
+    result=ExternalAccess(gmail=client).quick_answer("What's my last email altogether?",'Europe/London')
+    assert 'in that search' in result['text'] and 'no emails at all' not in result['text']
+
+
+def test_latest_scope_preserves_explicit_inbox_and_does_not_capture_other_actions():
+    from app.integrations import latest_email_request
+    assert latest_email_request('What is my latest email in my inbox?')=='inbox'
+    assert latest_email_request('What is my last email and create a task?') is None
+    assert latest_email_request('What is my latest email from Alice?') is None
+
+
+def test_archived_link_reference_can_be_read_on_next_turn():
+    calls=[];history=selected_mail_history()
+    history[-1]['sources'][0]['url']=history[-1]['sources'][0]['url'].replace('#inbox/','#all/')
+    access=ExternalAccess(gmail=fake_mail_client(calls)).for_request('Read through it.',history)
+    assert access.read_gmail()['id']=='abc123' and calls==['abc123']
+
+
+def test_latest_mail_model_tool_registers_authorized_id_and_does_not_claim_account_count(tmp_path):
+    replies=iter([dict(tool_calls=[dict(name='latest_gmail',arguments=dict(scope='all'))]),
+                  dict(tool_calls=[dict(name='read_gmail',arguments=dict(id='abc123'))]),
+                  dict(answer='The newest email is from Example Bank.',apply_changes=False)])
+    model=SimpleNamespace(complete=lambda *a,**kw:dict(content=json.dumps(next(replies))))
+    calls=[]
+    result=Engine(*stores(tmp_path),model,{'context_size':8192},external=ExternalAccess(gmail=fake_mail_client(calls))).run('Who sent my most recent email?')
+    assert result['sources'][0]['id']=='abc123' and calls==['abc123']
+    access=ExternalAccess(gmail=fake_mail_client([])).for_request('Who sent my most recent email?')
+    assert access.latest_gmail()['account_total_unknown']
+    with pytest.raises(ValueError,match='authorize email'):
+        ExternalAccess(gmail=fake_mail_client([])).for_request('Show Shanghai weather').latest_gmail()
+
+
+def test_search_preview_does_not_overwrite_google_account_total():
+    client=SimpleNamespace(search=lambda *a,**kw:dict(account='person@example.test',messages=[],account_messages_total=12000))
+    result=ExternalAccess(gmail=client).for_request('Search my email from Alice.').search_gmail('from:alice@example.test',scope='all')
+    assert result['total']==0 and result['account_messages_total']==12000 and not result['account_total_unknown']
+
+
+def test_generic_chat_message_question_does_not_grant_gmail_access():
+    from app.integrations import latest_email_request
+    client=SimpleNamespace(latest=lambda **kw:pytest.fail('A chat message is not authorization to read Gmail'))
+    assert latest_email_request('What is my last message overall?') is None
+    with pytest.raises(ValueError,match='authorize email'):
+        ExternalAccess(gmail=client).for_request('Show my last message in the notes.').latest_gmail()

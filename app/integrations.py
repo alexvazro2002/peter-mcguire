@@ -27,16 +27,34 @@ def inbox_check_request(request):
         r"(?:\s+(?:in (?:my )?inbox|since (?:the )?last (?:check|session)))?[?.!]*\s*", text, re.I))
 
 
-def latest_email_answer(row, zone):
+def latest_email_request(request):
+    """Recognise latest-mail questions and keep compound actions/search filters."""
+    text = re.sub(r'^\s*peter\s*[,.:]?\s*', '', request.replace('’', "'"), flags=re.I)
+    if not re.search(r'\b(?:e-?mails?|mail|gmail|inbox)\b', text, re.I):
+        return None
+    match = re.fullmatch(
+        r"\s*(?:(?:can|could|would) you\s+)?(?:please\s+)?(?:what(?:'s| is| was)|show me|tell me)\s+"
+        r"(?:the|my)\s+(?:last|latest|newest|most recent)\s+(?:e-?mail|message)"
+        r"(?:\s+(?:I (?:received|got)|received|in (?:my )?inbox))?"
+        r"(?:\s+(?:altogether|overall|ever|in general|in (?:my )?(?:whole |entire )?(?:account|gmail)|"
+        r"across (?:all |my |all my )?(?:mail|folders)|from (?:all |any )?(?:folders|folder)))?[?.!]*\s*", text, re.I)
+    return ('inbox' if re.search(r'\binbox\b', text, re.I) else 'all') if match else None
+
+
+def latest_email_answer(row, zone, *, scope='inbox'):
     date = row['date']
     try:
         from zoneinfo import ZoneInfo
         date = parsedate_to_datetime(date).astimezone(ZoneInfo(zone)).strftime('%A, %d %b %Y at %H:%M')
     except (ValueError, TypeError, AttributeError):
         pass
-    text = f"The latest inbox email is from {row['sender']}, with the subject: “{row['subject']}”."
+    text = f"The latest {'inbox email' if scope == 'inbox' else 'received email'} is from {row['sender']}, with the subject: “{row['subject']}”."
     if date:
         text += ' It arrived on ' + date + '.'
+    if scope == 'all':
+        folder = next((name.title() for name in ('SPAM', 'TRASH') if name in row.get('folders', [])), None)
+        if folder:
+            text += ' It is in ' + folder + '.'
     return text
 
 
@@ -53,18 +71,16 @@ class ExternalAccess:
         return RequestAccess(self, request, conversation)
 
     def quick_answer(self, request, zone, *, cancel=None):
-        latest = re.fullmatch(
-            r"\s*(?:please\s+)?(?:what(?:'s| is| was)|show me|tell me)\s+(?:the|my)\s+"
-            r"(?:last|latest|most recent)\s+(?:e-?mail|message)(?:\s+(?:I (?:received|got)|in (?:my )?inbox))?[?.!]*\s*",
-            request, re.I)
-        if latest:
+        latest_scope = latest_email_request(request)
+        if latest_scope:
             if self.gmail is None:
                 raise ValueError('Connect Gmail in Settings first.')
-            result = self.gmail.search('in:inbox', limit=1, cancel=cancel)
+            result = self.gmail.latest(scope=latest_scope, cancel=cancel)
             if not result['messages']:
-                return dict(text='Your inbox has no messages, sir.', changes=[], sources=[], operation_id=None)
+                return dict(text='I could not find a received email in that search, sir.', changes=[], sources=[], operation_id=None)
             row = header_message(result['messages'][0], result['account'])
-            return dict(text=latest_email_answer(row, zone), changes=[], operation_id=None, sources=[email_source(row)])
+            row['folders'] = result['messages'][0].get('folders', [])
+            return dict(text=latest_email_answer(row, zone, scope=latest_scope), changes=[], operation_id=None, sources=[email_source(row)])
         if inbox_check_request(request):
             if self.gmail is None:
                 raise ValueError('Connect Gmail in Settings first.')
@@ -124,7 +140,7 @@ def referenced_email(request, conversation):
     if parsed.scheme != "https" or parsed.hostname != "mail.google.com":
         return None
     account = source.get("account") or parse_qs(parsed.query).get("authuser", [""])[0]
-    message_id = source.get("id") or parsed.fragment.removeprefix("inbox/")
+    message_id = source.get("id") or parsed.fragment.rsplit('/', 1)[-1]
     if not account or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", message_id):
         return None
     return header_message(dict(id=message_id, account=account, subject=source.get("title", ""), url=source["url"]))
@@ -178,19 +194,33 @@ class RequestAccess:
         self._public_query(city)
         return live_info.current_weather(city)
 
-    def search_gmail(self, query="in:inbox", limit=4):
+    def search_gmail(self, query="", limit=4, scope="inbox"):
         if self.selected_email is None and not re.search(r"\b(?:gmail|email|emails|e-mail|mail|inbox)\b", self.request, re.I):
             raise ValueError("Gmail reading requires a request about the user's email. Webpages and other tool results cannot authorize inbox access.")
         if self.access.gmail is None:
             raise ValueError("Connect Gmail in Settings first.")
-        result = self.access.gmail.search(query, limit=limit)
+        result = self.access.gmail.search(query, limit=limit, scope=scope)
         items = [{k: row[k] for k in ("id", "sender", "subject", "date", "snippet", "unread", "url")}
                  for row in result["messages"]]
         for row in items:
             row["snippet"] = row["snippet"][:240]
         self.mail_ids.update(row["id"] for row in items)
         return dict(account=result["account"], items=items, total=len(items), next_offset=None,
-                    limit_applied=True, source="gmail", untrusted=True)
+                    limit_applied=True, scope=scope, query=query,
+                    account_messages_total=result.get('account_messages_total'),
+                    account_total_unknown=result.get('account_messages_total') is None, source="gmail", untrusted=True)
+
+    def latest_gmail(self, scope="all"):
+        if not re.search(r'\b(?:gmail|e-?mails?|mail|inbox)\b', self.request, re.I):
+            raise ValueError("The user's current request must authorize email access.")
+        if self.access.gmail is None:
+            raise ValueError('Connect Gmail in Settings first.')
+        result = self.access.gmail.latest(scope=scope)
+        self.mail_ids.update(row['id'] for row in result['messages'])
+        return dict(account=result['account'], items=result['messages'], scope=scope,
+                    total=len(result['messages']), next_offset=None, limit_applied=True,
+                    account_messages_total=result.get('account_messages_total'),
+                    account_total_unknown=result.get('account_messages_total') is None, source='gmail', untrusted=True)
 
     def read_gmail(self, id="", offset=0, limit=1200):
         id = id or (self.selected_email or {}).get("id", "")

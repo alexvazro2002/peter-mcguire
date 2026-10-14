@@ -57,7 +57,7 @@ class Backend:
                 if path in backend.failures:
                     return Response({}, backend.failures[path])
                 if path == "/profile":
-                    return Response({"emailAddress": backend.account, "historyId": backend.profile_history})
+                    return Response({"emailAddress": backend.account, "historyId": backend.profile_history, "messagesTotal":len(backend.mail)})
                 if path == "/messages":
                     ids = backend.recent_ids if kwargs["params"].get("q") else backend.full_ids
                     return Response({"messages": [{"id": value} for value in ids]})
@@ -388,3 +388,31 @@ def test_message_links_select_the_authorized_non_default_browser_account(configu
         assert parse_qs(link.query)["authuser"] == [backend.account]
         assert link.fragment == "inbox/" + message["id"]
         assert "/u/0/" not in link.path
+
+
+def test_all_mail_latest_search_is_not_forced_to_inbox_and_archived_body_can_be_read(configured):
+    client,backend=configured
+    backend.recent_ids=['archived']
+    backend.mail['archived']=mail('archived','The actual archived message.',labels=['UNREAD'],received=300000000)
+    result=client.latest(scope='all')
+    params=next(options['params'] for _,url,options in backend.calls if url.endswith('/messages'))
+    assert 'labelIds' not in params and params['includeSpamTrash']=='true'
+    assert params['q']=='-in:sent -in:drafts' and params['maxResults']==1
+    assert result['messages'][0]['id']=='archived' and result['messages'][0]['url'].endswith('#all/archived')
+    assert client.read('archived')['message']['body']=='The actual archived message.'
+    assert all(method=='GET' for method,_,_ in backend.calls)
+
+
+def test_inbox_sync_and_explicit_inbox_latest_keep_inbox_scope(configured):
+    client,backend=configured
+    client.latest(scope='inbox')
+    params=next(options['params'] for _,url,options in backend.calls if url.endswith('/messages'))
+    assert params['labelIds']=='INBOX' and params['includeSpamTrash']=='false'
+    backend.calls.clear();client.sync_new()
+    assert all(options['params'].get('labelIds')=='INBOX' for _,url,options in backend.calls if url.endswith('/messages'))
+
+
+def test_empty_filtered_search_still_reports_verified_account_total(configured):
+    client,backend=configured;backend.recent_ids=[]
+    result=client.search('from:nobody@example.test',scope='all')
+    assert result['messages']==[] and result['account_messages_total']==2

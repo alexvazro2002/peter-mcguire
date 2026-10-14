@@ -291,3 +291,26 @@ def test_british_voice_uses_installed_runtime_and_preserves_private_text(tmp_pat
         assert not Path(calls[-1][0][-1]).exists()
     finally:
         controller.close()
+
+
+def test_sentence_playback_emits_caption_text_duration_and_reply_identity(tmp_path):
+    from app.voice import VoiceController,utterance_id
+    calls=[]
+    controller=VoiceController({})
+    controller._run_audio=lambda args,*a,**kw:calls.append(args)
+    controller.sentence_pause=0
+    def produce(chunks,stop):
+        for index,chunk in enumerate(chunks):
+            partial=tmp_path/f'{index:04d}.partial'
+            partial.write_bytes(wav_bytes())
+            partial.replace(tmp_path/f'{index:04d}.wav')
+    try:
+        controller._sentence_pipeline('First sentence. Second sentence.',tmp_path,produce,'fake-player',threading.Event())
+        captions=[]
+        while not controller.events.empty():
+            event=controller.events.get_nowait()
+            if event['type']=='voice_caption':captions.append(event)
+        assert [e['text'] for e in captions]==['First sentence.','Second sentence.']
+        assert all(e['seconds']>0 and e['utterance_id']==utterance_id('First sentence. Second sentence.') for e in captions)
+        assert len(calls)==2
+    finally:controller.close()
