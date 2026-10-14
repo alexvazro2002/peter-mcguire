@@ -11,10 +11,12 @@ import hashlib
 import json
 import logging
 import math
+import os
 import queue
 import re
 import shutil
 import signal
+import selectors
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,7 @@ from urllib.parse import urlsplit
 import requests
 from app.config import BASE_DIR, DATA_DIR
 from app.speech import speech_segments
+from app.hands_free import UtteranceDetector
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +89,9 @@ class VoiceController:
         self._process = None
         self._processes = set()
         self._process_tasks = {}
+        self.hands_free = bool(self.settings.get('hands_free', False))
+        self._auto_allowed = threading.Event()
+        self._auto_fault, self._operation, self._resume_after = False, None, 0
         self.sentence_pause = .3
         self._thread = threading.Thread(target=self._work, name="peter-voice", daemon=True)
         self._thread.start()
@@ -117,6 +123,23 @@ class VoiceController:
     def startup(self, text=None):
         self._submit("startup", text)
 
+    def set_hands_free(self, enabled):
+        self.hands_free = bool(enabled)
+        self._auto_fault = False
+        if not enabled:
+            self.allow_hands_free(False)
+
+    def allow_hands_free(self, allowed):
+        """The UI gates capture while reasoning, speaking or leaving the app."""
+        if allowed and self.hands_free and self.settings.get('enabled', True):
+            self._auto_allowed.set()
+        else:
+            self._auto_allowed.clear()
+            with self._lock:
+                recording = self._operation == 'hands_free'
+            if recording:
+                self.cancel()
+
     def toggle_listen(self):
         with self._lock:
             listening = self.state == "listening"
@@ -131,6 +154,7 @@ class VoiceController:
             self._submit("speak", text)
 
     def cancel(self):
+        self._auto_allowed.clear()
         with self._lock:
             self._active_cancel.set()
             self._record_stop.set()
@@ -154,10 +178,14 @@ class VoiceController:
             try:
                 operation, text, cancelled = self._pending.get(timeout=0.1)
             except queue.Empty:
-                continue
+                if (not self.hands_free or not self._auto_allowed.is_set() or self._auto_fault
+                        or time.monotonic() < self._resume_after):
+                    continue
+                operation, text, cancelled = 'hands_free', '', threading.Event()
             with self._lock:
                 self._active_cancel = cancelled
                 self._record_stop = threading.Event()
+                self._operation = operation
             session = self._session_factory()
             session.trust_env = False  # Local audio must never pass through an HTTP proxy.
             try:
@@ -165,6 +193,8 @@ class VoiceController:
                 self._ready(session, cancelled, wait=operation == "startup")
                 if operation == "record":
                     self._record(session, cancelled)
+                elif operation == 'hands_free':
+                    self._record_hands_free(session, cancelled)
                 elif operation == "speak":
                     self._speak(session, text, cancelled)
                 elif operation == "startup":
@@ -178,12 +208,18 @@ class VoiceController:
                 pass
             except Exception as error:
                 if not cancelled.is_set() and not self._closed.is_set():
+                    if operation == 'hands_free':
+                        self._auto_fault = True
                     logger.warning("Peter voice task failed", exc_info=True)
                     message = str(error) if isinstance(error, VoiceError) else "Local voice failed. Check the microphone and VoiceStudio service."
                     self._status("error", message, cancelled)
                     self.events.put(dict(type="voice_error", message=message))
             finally:
                 session.close()
+                with self._lock:
+                    self._operation = None
+                    if operation in {'startup', 'speak'}:
+                        self._resume_after = time.monotonic() + .6
 
     def _request(self, session, method, path, cancelled, **kwargs):
         self._check(cancelled)
@@ -449,23 +485,94 @@ class VoiceController:
             self._run_audio(argv, cancelled, limit=self.record_seconds, recording=True)
             self._check(cancelled)
             self._validate_wav(audio)
-            self._status("thinking", "Transcribing locally", cancelled)
-            with audio.open("rb") as source:
-                response = self._request(session, "POST", "/v1/audio/transcriptions", cancelled,
-                                         files={"file": ("microphone.wav", source, "audio/wav")},
-                                         data=dict(model=self.settings.get("asr_model", "whisper-1"),
-                                                   response_format="json",
-                                                   language=self.settings.get("voice_language", "en")))
-                try:
-                    result = response.json()
-                finally:
-                    response.close()
+            self._transcribe(session, audio, cancelled)
+
+    def _transcribe(self, session, audio, cancelled, *, automatic=False):
+        self._status("thinking", "Transcribing locally", cancelled)
+        with audio.open("rb") as source:
+            response = self._request(session, "POST", "/v1/audio/transcriptions", cancelled,
+                                     files={"file": ("microphone.wav", source, "audio/wav")},
+                                     data=dict(model=self.settings.get("asr_model", "whisper-1"),
+                                               response_format="json",
+                                               language=self.settings.get("voice_language", "en")))
+            try:
+                result = response.json()
+            finally:
+                response.close()
+        self._check(cancelled)
+        text = result.get("text", "").strip() if isinstance(result, dict) else ""
+        if not text:
+            if automatic:
+                return
+            raise VoiceError("No speech was recognized. Check the selected microphone and try again.")
+        # Stay paused until the UI accepts this utterance and has completed
+        # the reply. Never transcribe Peter's speaker audio as a new request.
+        self._auto_allowed.clear()
+        self._status("idle", "Speech recognized", cancelled)
+        self.events.put(dict(type="transcript", text=text))
+
+
+    def _record_hands_free(self, session, cancelled):
+        recorder = self._which('pw-record') or self._which('arecord')
+        if not recorder:
+            raise VoiceError('Install pipewire-utils or alsa-utils to capture microphone audio.')
+        try:
+            detector = UtteranceDetector(max_seconds=self.record_seconds)
+        except ImportError as error:
+            raise VoiceError('The hands-free speech detector is missing. Run install-linux.sh.') from error
+        argv = ([recorder, '--raw', '--rate=16000', '--channels=1', '--format=s16', '-']
+                if Path(recorder).name == 'pw-record' else
+                [recorder, '--quiet', '-t', 'raw', '-f', 'S16_LE', '-r', '16000', '-c', '1', '-'])
+        with tempfile.TemporaryFile() as errors:
+            process = self._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=errors, start_new_session=True, bufsize=0)
+            with self._lock:
+                self._processes.add(process)
+                self._process_tasks[process] = cancelled
+            pcm, pending = None, bytearray()
+            try:
+                self._check(cancelled)
+                self._status('armed', 'Hands-free on · Speak when ready', cancelled)
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    while pcm is None:
+                        self._check(cancelled)
+                        if not self._auto_allowed.is_set() or not self.hands_free:
+                            raise _Cancelled()
+                        if not selector.select(timeout=.1):
+                            if process.poll() is not None:
+                                raise VoiceError('The microphone stopped. Check your default input device.')
+                            continue
+                        data = os.read(process.stdout.fileno(), 9600)
+                        if not data:
+                            raise VoiceError('The microphone is unavailable. Check your default input device.')
+                        pending.extend(data)
+                        while len(pending) >= detector.frame_bytes:
+                            frame = bytes(pending[:detector.frame_bytes])
+                            del pending[:detector.frame_bytes]
+                            started, pcm = detector.feed(frame)
+                            if started:
+                                self._status('listening', 'Listening · Finish speaking to send', cancelled)
+                            if pcm is not None:
+                                break
+                            if self.state == 'listening' and not detector.active:
+                                self._status('armed', 'Hands-free on · Speak when ready', cancelled)
+            finally:
+                self._stop_process(process)
+                if process.stdout is not None:
+                    process.stdout.close()
+                with self._lock:
+                    self._processes.discard(process)
+                    self._process_tasks.pop(process, None)
             self._check(cancelled)
-            text = result.get("text", "").strip() if isinstance(result, dict) else ""
-            if not text:
-                raise VoiceError("No speech was recognized. Check the selected microphone and try again.")
-            self._status("idle", "Speech recognized", cancelled)
-            self.events.put(dict(type="transcript", text=text))
+            with tempfile.TemporaryDirectory(prefix='peter-voice-') as directory:
+                audio = Path(directory) / 'microphone.wav'
+                with wave.open(str(audio), 'wb') as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(16000)
+                    wav.writeframes(pcm)
+                self._transcribe(session, audio, cancelled, automatic=True)
 
     def _run_audio(self, argv, cancelled, limit, recording=False, private=False):
         self._check(cancelled)

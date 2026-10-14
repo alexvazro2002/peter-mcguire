@@ -169,3 +169,27 @@ destination is verified private before push. The private repository is
 - One British model instance serves each reply, with generation overlapping playback and at most three unfinished clips in flight. Unit tests covered exact ordering, 0.3-second pauses, lookahead limits, long-sentence splitting, decimal/abbreviation boundaries, simultaneous synthesis/player cancellation, late HTTP cleanup, failures, atomic WAV publication and sentence bubbles with final-part source/undo controls.
 - The installed native app restarted with no latest-startup Python traceback and a healthy VoiceStudio API. Natural pitch and pace remain unchanged.
 - The supplied Google client was moved into Peter's private `.runtime/gmail/client.json` with mode 0600. The OAuth request uses only `gmail.readonly`; token checks reject broader scopes and the Gmail API adapter implements only GET. Google currently rejects sign-in until the account is added as a project test user. No real inbox was read during this validation.
+
+## Hands-free conversation and opening items · 14 October 2026
+
+The installed desktop copy passed **576 tests**. Hands-free capture uses local
+WebRTC speech detection, 300 ms of preroll, and a roughly 900 ms silence boundary.
+Capture pauses during inference and speech, then resumes after playback. Isolated
+real-pipe tests verified silence rejection, multiple turns, cancellation, toggle
+off, microphone failure without retry loops, and no capture during playback.
+A synthetic British voice sample was detected and transcribed by the installed
+local Whisper service in 1.52 seconds; no microphone or private email was used
+for this transcription probe. The default native microphone delivered PCM in a
+brief capture check; its audio was immediately discarded.
+
+Natural opening requests resolve actual files or Gmail links, retain the account
+reference, and report system-opener failures. Duplicate matches require a choice;
+the next turn can select “the second one”. Email opening offers require an
+explicit affirmative reply. Tests verified account changes, forged links,
+filenames containing shell characters, document formats, and stale offers.
+Gmail's API access remains read-only. No email send capability was introduced.
+
+A synthetic browser preview at 1000 × 680 verified that the smaller translucent
+previous message sits above the current caption, clicking it opens history, and
+turning hands-free off restores Speak to Peter. Live captions still fade after
+20 idle seconds; waiting for speech does not keep them visible indefinitely.

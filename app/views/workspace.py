@@ -227,6 +227,7 @@ def build_settings(app):
     voice_enabled = ft.Switch(label="Enable microphone and voice services", value=peter.get("enabled", True))
     autostart = ft.Switch(label="Load local model and voice at startup", value=peter.get("autostart", True))
     speech_enabled = ft.Switch(label="Speak Peter's answers aloud", value=peter.get("speech_enabled", True))
+    hands_free = ft.Switch(label='Start hands-free listening automatically', value=peter.get('hands_free', True))
     startup_greeting = ft.Switch(label="Greet me at startup", value=peter.get("startup_greeting", True))
     greeting = label("Peter greets you for the time of day, then waits for your reply before reading today's calendar and tasks.", c, 11)
     voice_url = field(c, label="Local VoiceStudio URL", value=peter.get("voice_url", "http://127.0.0.1:3900"))
@@ -293,6 +294,7 @@ def build_settings(app):
             if not 0.7 <= speed_value <= 1.4 or not -4 <= pitch_value <= 2:
                 raise ValueError("Choose speaking pace from 0.7 to 1.4 and pitch from -4 to +2.")
             voice_values = dict(enabled=voice_enabled.value, autostart=autostart.value,
+                                hands_free=hands_free.value,
                                 speech_enabled=speech_enabled.value, startup_greeting=startup_greeting.value,
                                 voice_url=voice_endpoint,
                                 voice_model=(voice_model.value or "").strip(), voice_id=(voice_id.value or "").strip(),
@@ -335,10 +337,10 @@ def build_settings(app):
                          ft.Row([vault, button("Browse", lambda e: app.pick(vault, directory=True), c)], spacing=10),
                          label("Markdown stays directly editable in Obsidian or another editor. Changing vaults does not move files.", c)], spacing=14), c),
         panel(ft.Column([ft.Text("Peter · Local voice", size=18, color=c["text"]), voice_enabled, autostart,
-                         speech_enabled, startup_greeting, greeting, voice_url,
+                         speech_enabled, hands_free, startup_greeting, greeting, voice_url,
                          ft.Row([voice_model, voice_id, asr_model], spacing=12), ft.Row([voice_speed, voice_pitch], spacing=12), record_seconds,
                          label("Peter uses a natural British male voice. His manner is calm, concise and professionally reserved.", c, 11),
-                         label("Tap Peter's bubble to start recording and again to finish. Speech and transcription use your local VoiceStudio APIs. Muting speech keeps microphone input available.", c, 11)], spacing=14), c),
+                         label("Hands-free detects speech and sends it after a pause, then listens again after Peter replies. Turn it off to use Speak to Peter. Audio and transcription stay local.", c, 11)], spacing=14), c),
         panel(ft.Column([ft.Text("Internet & Gmail", size=18, color=c["text"]), internet,
                          label("Peter can look up current times, live weather and public webpages. Web searches use words from your current message.", c, 11),
                          gmail_startup, ft.Row([gmail_client, button("Browse", lambda e: app.pick(gmail_client), c)], spacing=10),

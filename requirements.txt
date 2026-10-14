@@ -1,6 +1,7 @@
 # Isolated UI environment. Do not upgrade Flet without migrating and testing the UI.
 flet==0.28.3
 flet-desktop==0.28.3
+webrtcvad-wheels==2.0.14
 requests>=2.31,<3
 urllib3>=2.2,<3
 dateparser>=1.2,<2

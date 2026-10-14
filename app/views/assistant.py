@@ -55,7 +55,16 @@ class AssistantView:
         self.refresh()
 
     def source(self, source):
-        if source["kind"] in {"web", "email"}:
+        if source['kind'] == 'file':
+            from app.opening import launch_target
+            def open_document():
+                try:
+                    launch_target(source)
+                except (OSError, ValueError) as error:
+                    self.app.shell_commands.put(dict(action='notify', message=str(error), error=True))
+            import threading
+            threading.Thread(target=open_document, daemon=True).start()
+        elif source["kind"] in {"web", "email"}:
             try:
                 from app.integrations import source_url
                 self.app.page.launch_url(source_url(source))

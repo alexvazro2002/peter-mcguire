@@ -18,6 +18,8 @@ class VoiceDouble:
         self.startups += 1
         self.greeting = text
     def toggle_listen(self): self.listens += 1
+    def set_hands_free(self, enabled): self.hands_free = enabled
+    def allow_hands_free(self, allowed): self.allowed = allowed
     def speak(self, text): self.spoken.append(text)
     def cancel(self): pass
     def close(self): pass
@@ -522,3 +524,32 @@ def test_caption_voice_state_survives_home_navigation(peter_ui):
     assert app.home_view.speech_caption(dict(text='Second sentence.',seconds=3,utterance_id=utterance_id(full)),update=False)
     app.navigate('home')
     assert app.home_view.live_caption.value=='Second sentence.'
+
+
+def test_previous_live_message_is_smaller_translucent_and_opens_history(peter_ui):
+    app = peter_ui
+    app.assistant.append(dict(role='user', text='What is the last email?'))
+    app.assistant.append(dict(role='assistant', text='Your latest email is from an example sender.'))
+    view = app.home_view
+    view.refresh()
+    assert view.previous_caption.value == 'What is the last email?'
+    assert view.previous_caption.size < view.live_caption.size
+    assert .4 < view.previous_message.opacity < 1
+    view.previous_message.on_click(None)
+    assert view.conversation_state['history'] and view.history_toggle.text == 'Hide'
+    view.conversation_state['history_scroll'] = 70
+    view.conversation_state['history_follow'] = False
+    view.previous_message.on_click(None)
+    assert view.conversation_state['history_scroll'] == 70
+
+
+def test_hands_free_toggle_persists_and_manual_controls_return(peter_ui):
+    app = peter_ui
+    assert app.home_view.hands_free.value and not app.home_view.listen.visible
+    app.set_peter_hands_free(False)
+    assert app.voice.hands_free is False and app.home_view.listen.visible
+    app.set_peter_hands_free(True)
+    assert app.voice.hands_free and app.voice.allowed and not app.home_view.listen.visible
+    app.peter_state = 'armed'
+    app.home_view.refresh()
+    assert app.home_view.state.value == 'READY TO LISTEN'

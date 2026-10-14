@@ -177,7 +177,17 @@ class Workspace:
         elif self.assistant.busy:
             self.notify("Peter is finishing the current request.")
         else:
+            if self.cfg.get('peter', {}).get('hands_free', False):
+                self.set_peter_hands_free(False)
             self.voice.toggle_listen()
+
+    def set_peter_hands_free(self, enabled):
+        self.cfg.setdefault('peter', {})['hands_free'] = bool(enabled)
+        self.persist()
+        self.voice.set_hands_free(enabled)
+        self.voice.allow_hands_free(enabled and not self.assistant.busy)
+        if self.home_view and self.view == 'home':
+            self.home_view.refresh()
 
     def cancel_peter(self):
         self.voice.cancel()
@@ -457,7 +467,7 @@ class Workspace:
                 or self.email_state_error or self.assistant.briefing.awaiting_ready or self.email_briefing.awaiting):
             return False
         speech = self.cfg["peter"].get("enabled", True) and self.cfg["peter"].get("speech_enabled", True)
-        if speech and self.voice.state not in {"idle", "error"}:
+        if speech and self.voice.state not in {"idle", "armed", "error"}:
             return False
         try:
             result = self.email_briefing.offer_next()
@@ -542,6 +552,8 @@ class Workspace:
                         else:
                             command["control"].value = command["path"]
                             command["control"].update()
+                    elif action == "notify":
+                        self.notify(command["message"], command.get("error", False))
                     elif action == "theme":
                         self.cfg["theme_dark"] = command["dark"]
                         self.render()
@@ -622,7 +634,7 @@ class Workspace:
                     message = dict(role="assistant", text=event.get("text", "**Could not complete the request:** " + event.get("message", "")))
                     if event["type"] == "answer":
                         message.update({k: event.get(k) for k in ("sources", "changes", "operation_id")})
-                        message.update({k: event[k] for k in ("email_offer", "email_handled", "email_content", "untrusted") if k in event})
+                        message.update({k: event[k] for k in ("email_offer", "email_handled", "email_content", "untrusted", "open_offer", "open_choices") if k in event})
                         if event.get('gmail_check_batch'):
                             try:
                                 self.email_routine_started, self.email_prompt_pending = True, True
@@ -715,6 +727,7 @@ class Workspace:
                             self.library_status = "Disconnected"
             if self.offer_next_email():
                 assistant_changed = peter_changed = True
+            self.voice.allow_hands_free(not self.assistant.busy and not self.closed)
             try:
                 if self.view == "home" and datetime.now().replace(second=0, microsecond=0) != self.home_focus_minute:
                     home_changed = True

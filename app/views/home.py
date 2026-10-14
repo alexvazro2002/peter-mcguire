@@ -64,9 +64,9 @@ class PeterHomeView:
         height = getattr(app.page, "height", None) or getattr(app.page.window, "height", 900) or 900
         compact = height < 780
         app.home_focus_minute = now.replace(second=0, microsecond=0)
-        self.orb = PeterOrb(app, size=136 if compact else 208)
+        self.orb = PeterOrb(app, size=112 if height < 720 else 136 if compact else 208)
         width = getattr(app.page, 'width', None) or 1440
-        self.caption_limit = 96 if height < 720 or width < 1100 else 140 if compact else 220
+        self.caption_limit = 64 if height < 720 or width < 1100 else 96 if compact else 180
         self.state = ft.Text("", size=10, color=c["cyan"], weight=ft.FontWeight.W_600,
                              text_align=ft.TextAlign.CENTER)
         self.state_icon = ft.Icon(ft.Icons.RADIO_BUTTON_CHECKED, size=13, color=c['cyan'])
@@ -89,8 +89,13 @@ class PeterHomeView:
         self.live_speaker = ft.Text('', size=10, color=c['dim'], text_align=ft.TextAlign.CENTER)
         self.live_caption = ft.Text('', size=22 if compact else 26, color=c['text'],
                                     text_align=ft.TextAlign.CENTER, weight=ft.FontWeight.W_400)
+        self.previous_caption = ft.Text('', size=15 if compact else 18, color=c['text'],
+                                       text_align=ft.TextAlign.CENTER, max_lines=1 if compact else 2, overflow=ft.TextOverflow.ELLIPSIS)
+        self.previous_message = ft.Container(self.previous_caption, opacity=.55, visible=False,
+            on_click=self.show_history, tooltip='Show history', padding=ft.padding.only(bottom=4),
+            alignment=ft.alignment.center)
         self.live_sources = ft.Row([], alignment=ft.MainAxisAlignment.CENTER, wrap=True, spacing=4)
-        self.live_stage = ft.Column([self.live_speaker, self.live_caption, self.live_sources], expand=True,
+        self.live_stage = ft.Column([self.previous_message, self.live_speaker, self.live_caption, self.live_sources], expand=True,
                                     alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=6)
         self.conversation_frame = ft.Container(self.conversation, expand=True, opacity=0,
             animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
@@ -107,6 +112,9 @@ class PeterHomeView:
         self.send_button = ft.IconButton(ft.Icons.ARROW_UPWARD_ROUNDED, tooltip="Send to Peter",
                                          icon_color=c["accent_text"], bgcolor=c["accent"], on_click=self.send)
         self.listen = button("Speak to Peter", lambda _: app.toggle_peter_listen(), c, ft.Icons.MIC_NONE_ROUNDED)
+        self.hands_free = ft.Switch(label='Hands-free', value=app.cfg.get('peter', {}).get('hands_free', True),
+            on_change=lambda e: app.set_peter_hands_free(e.control.value), scale=.85,
+            tooltip='Listen automatically when you speak; pause during Peter’s replies')
         self.stop = ft.IconButton(ft.Icons.STOP_CIRCLE_OUTLINED, tooltip="Stop speech or current request",
                                   icon_color=c["muted"], on_click=lambda _: app.cancel_peter())
         center = panel(ft.Column([
@@ -114,7 +122,7 @@ class PeterHomeView:
             ft.Container(self.orb, alignment=ft.alignment.center),
             ft.Row([self.state_icon, self.state], alignment=ft.MainAxisAlignment.CENTER, spacing=6), self.status,
             self.conversation_frame,
-            ft.Row([self.listen, self.stop], spacing=4, alignment=ft.MainAxisAlignment.CENTER),
+            ft.Row([self.hands_free, self.listen, self.stop], spacing=2, alignment=ft.MainAxisAlignment.CENTER),
             ft.Row([self.input, self.send_button], spacing=8),
             self.history_toggle,
             *([] if compact else [self.model_status])
@@ -233,6 +241,10 @@ class PeterHomeView:
         self.refresh_conversation()
         self.content.update()
         self.restore_scroll()
+
+    def show_history(self, _):
+        if not self.conversation_state['history']:
+            self.toggle_history(None)
 
     def remember_scroll(self, event):
         if self.app.home_view is not self or not self.conversation_state['history']:
@@ -355,6 +367,10 @@ class PeterHomeView:
         c = self.c
         if not state['history']:
             latest = saved[-1] if saved else None
+            previous = saved[-2] if len(saved) > 1 else None
+            self.previous_message.visible = previous is not None
+            self.previous_caption.value = spoken_text(previous['text']) if previous else ''
+            self.previous_caption.color = c['cyan'] if previous and previous['role'] == 'user' else c['text']
             live_signature = self.message_signature([latest]) if latest else None
             if live_signature != state['live_signature']:
                 state['live_signature'] = live_signature
@@ -365,7 +381,7 @@ class PeterHomeView:
                 self.live_caption.value = state['caption_pages'][state['caption_index']]
             self.live_speaker.value = 'YOU' if latest and latest['role'] == 'user' else 'PETER'
             self.live_caption.color = c['cyan'] if latest and latest['role'] == 'user' else c['text']
-            self.live_sources.controls = [ft.TextButton('Open email' if source['kind'] == 'email' else 'Open note' if source['kind'] == 'note' else 'Open source', icon=ft.Icons.NORTH_EAST,
+            self.live_sources.controls = [ft.TextButton('Open email' if source['kind'] == 'email' else 'Open file' if source['kind'] == 'file' else 'Open note' if source['kind'] == 'note' else 'Open source', icon=ft.Icons.NORTH_EAST,
                 on_click=lambda _, item=source: self.source(item), style=ft.ButtonStyle(color=c['cyan']))
                 for source in (latest or {}).get('sources', [])[:1]]
             return
@@ -396,7 +412,7 @@ class PeterHomeView:
     def refresh(self, update=True):
         app, state = self.app, self.app.peter_state
         self.orb.set_state(state)
-        self.state.value = {"idle": "STANDBY", "listening": "LISTENING", "thinking": "THINKING",
+        self.state.value = {"idle": "STANDBY", "armed": "READY TO LISTEN", "listening": "LISTENING", "thinking": "THINKING",
                             "speaking": "TALKING", "error": "NEEDS ATTENTION"}.get(state, "STANDBY")
         self.state.color = self.c["danger"] if state == "error" else self.c["violet"] if state == "thinking" else self.c["cyan"]
         self.state_icon.name = {"idle": ft.Icons.RADIO_BUTTON_CHECKED, "listening": ft.Icons.MIC_NONE_ROUNDED,
@@ -407,6 +423,9 @@ class PeterHomeView:
         self.model_status.value = app.peter_model_status
         self.listen.text = "Finish listening" if state == "listening" else "Speak to Peter"
         self.listen.disabled = app.assistant.busy or not app.cfg.get("peter", {}).get("enabled", True)
+        self.hands_free.value = app.cfg.get('peter', {}).get('hands_free', True)
+        self.hands_free.disabled = not app.cfg.get('peter', {}).get('enabled', True)
+        self.listen.visible = not self.hands_free.value
         self.input.disabled = self.send_button.disabled = app.assistant.busy
         self.refresh_conversation()
         if update:

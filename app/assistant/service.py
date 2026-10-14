@@ -9,6 +9,7 @@ from app.assistant.transactions import History
 from app.briefing import DailyBriefing
 from app.config import atomic_write
 from app.memory import MemoryStore
+from app.opening import OpenRequests
 
 
 class AssistantService:
@@ -16,6 +17,7 @@ class AssistantService:
         self.vault, self.calendar, self.runtime, self.path, self.zone = vault, calendar, runtime, conversation_path, zone
         self.memory = memory or MemoryStore(conversation_path.parent / "personal-memory.json")
         self.external = external
+        self.opening = OpenRequests(vault)
         self.briefing = DailyBriefing(calendar, zone)
         self.email_briefing = None
         self.history = History(vault, calendar, vault.root / ".history" / "assistant", memory=self.memory)
@@ -69,6 +71,10 @@ class AssistantService:
 
         def work():
             try:
+                opened = self.opening.respond(request, conversation, self.external, self.cancel)
+                if opened is not None:
+                    emit(type="answer", **opened)
+                    return
                 briefing = self.briefing.respond(request, cancel=self.cancel)
                 if briefing is not None:
                     emit(type="answer", **briefing)

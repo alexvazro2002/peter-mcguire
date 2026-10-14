@@ -12,7 +12,7 @@ existing Notes, Calendar, tasks, lists, memories, tools and AI Library.
 
 Double-click **Peter.desktop** on the Desktop, choose **Peter (McGuire)** in your
 application menu, or run `./start-linux.sh` from the project directory. LM Studio's
-existing Gemma model and the installed local voice APIs start automatically.
+  selected model and the installed local voice APIs start automatically.
 
 For a fresh checkout, use a compatible Python 3.11/3.12 interpreter with
 `PETER_PYTHON=/path/to/python3.12 ./install-linux.sh`, then `./install-voice.sh`.
@@ -22,8 +22,20 @@ run locally. No Gemma weights are included or downloaded.
 ## Use
 
 - The [Thinking Orbs](https://github.com/Jakubantalik/thinking-orbs) animation plays locally in the native client. Typed input, speech transcripts and Peter's replies stay visible on Home.
-- Click the bubble, **Speak to Peter**, or **Ctrl+Space** to capture speech. Click
-  again to finish; **Stop** cancels. Typed input uses the same Assistant. Peter gives one or two short sentences by default, with extended reasoning disabled and a 384-token reply budget. Older saved messages stay available while the model receives bounded recent context.
+- **Hands-free** starts enabled: speak normally and pause for about a second to
+  send. Peter pauses microphone capture during his reply and listens again
+  afterwards. Speech detection and transcription run locally; ambient audio is
+  not saved. Turn the toggle off for **Speak to Peter**, the bubble or
+  **Ctrl+Space**, then click again to finish. **Stop** cancels the current request.
+  Typed input uses the same Assistant. Peter gives one or two short sentences by
+  default, with extended reasoning disabled and a 384-token reply budget.
+- The previous message appears above the current subtitle, smaller and translucent.
+  Click it to open history at the bottom. Live captions fade after 20 idle seconds.
+- Ask **Open my latest email**, **Open it**, or **Open report.pdf**. Email links
+  use the connected Gmail account; files open in their default application.
+  Filenames are matched in Notes, Desktop, Documents and Downloads; an exact
+  path can identify a file elsewhere. Multiple matches require a choice. Peter
+  may offer to open an email and waits for your reply before doing so.
 - The bubble changes with listening, thinking and speaking. Startup greeting and
   speech mute are configurable in Settings.
 - Calendar, Notes, Memory, utility tools and AI Library retain their existing

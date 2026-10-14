@@ -24,6 +24,7 @@ DEFAULTS = {
     "notifications": {"enabled": False, "server_url": "https://ntfy.sh", "topic": "", "include_answer": False},
     "peter": {
         "enabled": True, "autostart": True, "speech_enabled": True, "startup_greeting": True,
+        "hands_free": True,
         "greeting": "Systems are ready. At your service.",
         "voice_url": "http://127.0.0.1:3900", "voice_model": "kokoro-onnx", "voice_id": "bm_george",
         "voice_speed": 1.15, "voice_pitch": 0.8, "british_voice_path": "",

@@ -314,3 +314,87 @@ def test_sentence_playback_emits_caption_text_duration_and_reply_identity(tmp_pa
         assert all(e['seconds']>0 and e['utterance_id']==utterance_id('First sentence. Second sentence.') for e in captions)
         assert len(calls)==2
     finally:controller.close()
+
+
+def hands_free_capture(monkeypatch, captures, *, voiced=True):
+    import subprocess
+    import sys
+    from app.hands_free import UtteranceDetector
+    class Vad:
+        def is_speech(self, frame, rate): return frame[0] == 1
+    monkeypatch.setattr('app.voice.UtteranceDetector', lambda **kw: UtteranceDetector(vad=Vad(), **kw))
+    def popen(argv, **kwargs):
+        if Path(argv[0]).name in {'pw-record', 'arecord'}:
+            # Real stdout pipe/select/cancellation; no microphone access.
+            process = subprocess.Popen([sys.executable, '-u', '-c',
+                'import sys,time;sys.stdout.buffer.write(' + ("b'\\0\\0'*480*10+b'\\x01\\0'*480*30+b'\\0\\0'*480*35" if voiced else "b'\\0\\0'*480*100") + ');sys.stdout.flush();time.sleep(10)'], **kwargs)
+            captures.append(process)
+            return process
+        return audio_process_factory([])(argv, **kwargs)
+    return popen
+
+
+def test_hands_free_transcribes_one_utterance_and_waits_for_reply_before_rearming(speech_server, monkeypatch):
+    url, capture = speech_server
+    processes = []
+    controller = VoiceController(dict(voice_url=url, hands_free=True), which=lambda n: '/usr/bin/' + n,
+                                 popen=hands_free_capture(monkeypatch, processes))
+    try:
+        controller.allow_hands_free(True)
+        assert wait_event(controller, 'voice_status', 'armed')['message'].startswith('Hands-free on')
+        wait_event(controller, 'voice_status', 'listening')
+        assert wait_event(controller, 'transcript')['text'] == 'Add a task for tomorrow.'
+        wait_event(controller, 'voice_status', 'idle')
+        time.sleep(.2)
+        assert len(processes) == 1 and processes[0].poll() is not None
+        assert len([row for row in capture['requests'] if row[0].endswith('transcriptions')]) == 1
+        controller.speak('Your task is ready.')
+        controller.allow_hands_free(True)  # UI may re-arm while speech is queued.
+        wait_event(controller, 'voice_status', 'speaking')
+        assert len(processes) == 1
+        wait_event(controller, 'voice_status', 'idle')
+        wait_event(controller, 'voice_status', 'armed')
+        assert wait_event(controller, 'transcript')['text'] == 'Add a task for tomorrow.'
+        assert len(processes) == 2
+    finally:
+        controller.close()
+    assert all(process.poll() is not None for process in processes)
+
+
+def test_idle_hands_free_does_not_transcribe_silence_and_toggle_closes_microphone(speech_server, monkeypatch):
+    url, capture = speech_server
+    processes = []
+    controller = VoiceController(dict(voice_url=url, hands_free=True), which=lambda n: '/usr/bin/' + n,
+                                 popen=hands_free_capture(monkeypatch, processes, voiced=False))
+    try:
+        controller.allow_hands_free(True)
+        wait_event(controller, 'voice_status', 'armed')
+        time.sleep(.15)
+        assert capture['requests'] == []
+        controller.set_hands_free(False)
+        deadline = time.monotonic() + 2
+        while processes[0].poll() is None and time.monotonic() < deadline: time.sleep(.01)
+        assert processes[0].poll() is not None
+        time.sleep(.2)
+        assert len(processes) == 1 and capture['requests'] == []
+    finally:
+        controller.close()
+
+
+def test_hands_free_microphone_failure_is_reported_once_without_restart_loop(speech_server, monkeypatch):
+    import subprocess
+    import sys
+    url, _ = speech_server
+    captures = []
+    def popen(argv, **kwargs):
+        process = subprocess.Popen([sys.executable, '-c', 'pass'], **kwargs)
+        captures.append(process)
+        return process
+    controller = VoiceController(dict(voice_url=url, hands_free=True), which=lambda n: '/usr/bin/' + n, popen=popen)
+    try:
+        controller.allow_hands_free(True)
+        assert 'microphone' in wait_event(controller, 'voice_error')['message'].lower()
+        time.sleep(.25)
+        assert len(captures) == 1
+    finally:
+        controller.close()

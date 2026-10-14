@@ -80,7 +80,9 @@ class ExternalAccess:
                 return dict(text='I could not find a received email in that search, sir.', changes=[], sources=[], operation_id=None)
             row = header_message(result['messages'][0], result['account'])
             row['folders'] = result['messages'][0].get('folders', [])
-            return dict(text=latest_email_answer(row, zone, scope=latest_scope), changes=[], operation_id=None, sources=[email_source(row)])
+            source = email_source(row)
+            return dict(text=latest_email_answer(row, zone, scope=latest_scope) + ' Would you like me to open it, sir?',
+                        changes=[], operation_id=None, sources=[source], open_offer=source)
         if inbox_check_request(request):
             if self.gmail is None:
                 raise ValueError('Connect Gmail in Settings first.')
