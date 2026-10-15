@@ -1,6 +1,7 @@
 """Shared local chat transport for the librarian and the workspace Assistant."""
 import math
 import re
+import time
 
 from library.server import validate_url
 from library.auth import check_auth, request_options
@@ -21,9 +22,12 @@ class ChatClient:
     def __init__(self, settings):
         self.settings = settings
         self.last_usage = {}
+        self.last_timings = {}
 
     def complete(self, messages, *, structured=False, max_tokens=None, response_schema=None):
         import requests
+        started = time.monotonic()
+        requests_used = 0
         validate_url(self.settings["server_url"])
         payload = {"messages": messages, "temperature": 0.1 if structured else 0.15,
                    "max_tokens": int(max_tokens if max_tokens is not None else self.settings.get("max_tokens", 1800))}
@@ -60,6 +64,8 @@ class ChatClient:
                     "name": "peter_reply", "strict": True, "schema": response_schema or ASSISTANT_REPLY_SCHEMA}}
         url = self.settings["server_url"].rstrip("/") + "/chat/completions"
         def post():
+            nonlocal requests_used
+            requests_used += 1
             return requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
 
         def rejection(response):
@@ -106,6 +112,9 @@ class ChatClient:
         except (KeyError, IndexError, TypeError, ValueError) as error:
             raise ValueError("The model server returned an invalid chat response.") from error
         self.last_usage = body.get("usage", {})
+        self.last_timings = dict(seconds=round(time.monotonic()-started,3),http_attempts=requests_used,
+                                 prompt_characters=sum(len(m.get('content','')) for m in messages),
+                                 prompt_tokens=self.last_usage.get('prompt_tokens'),completion_tokens=self.last_usage.get('completion_tokens'))
         content = re.sub(r"<think>.*?</think>", "", message.get("content") or "", flags=re.S).strip()
         if not content and not message.get("tool_calls"):
             raise ValueError("Model returned no final answer. Increase the output token budget in Settings.")

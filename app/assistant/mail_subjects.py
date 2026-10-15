@@ -11,6 +11,8 @@ _SUBJECT = r'\b(?:subjects?|subject lines?|email titles?)\b'
 def subject_plan(request, conversation=()):
     from app.integrations import request_text, recent_email_references
     text = request_text(request)
+    if re.search(_SUBJECT, text, re.I) and re.search(r'\blast\s+(?:\d+|one|two|three|four|five)\s+emails?\b', text, re.I):
+        text = re.sub(r'\bfrom me\b', 'for me', text, flags=re.I)
     # This route handles headers only; preserve all additional actions/filters.
     if re.search(r'\b(?:body|bodies|contents?|summari[sz]e|summary|unread|attachments?|containing|before|after)\b|'
                  r'\bfrom\s+(?!today\b|yesterday\b|last night\b|\d{4}-\d{2}-\d{2}\b|(?:my|the|all|these|those)\s+(?:emails?|mail|gmail|inbox)\b)|'

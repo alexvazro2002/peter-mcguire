@@ -109,3 +109,25 @@ def reference_context(conversation):
         if sources or evidence:
             rows.append(dict(sources=sources[:6], evidence=evidence or {}, timestamp=message.get('timestamp', '')))
     return rows[-3:]
+
+
+def social_request(request):
+    """Only social turns can bypass the workspace catalogue; actions never do."""
+    from app.integrations import request_text
+    text = request_text(request).strip(' .!?')
+    if not text and re.fullmatch(r'\s*(?:(?:hello|hi|hey)\s*[, ]*)?peter[.!?\s]*',request,re.I):
+        return True
+    return bool(re.fullmatch(r"(?:hello|hi|hey|good (?:morning|afternoon|evening)|thanks|thank you|cheers|"
+                            r"how are you(?: doing)?|how(?:'s| is) it going|hello[, ]+how are you|"
+                            r"(?:could|can) you be (?:a little |a bit )?less formal)",text,re.I))
+
+
+def social_answer(request,conversation,client):
+    system=SPOKEN_STYLE+'\nThis is only a social turn. Reply in one or two natural sentences. Do not bring in old email or task claims. No tools or action promises.'
+    response=client.complete([dict(role='system',content=system),*conversation_messages(conversation,3500,max_messages=6),dict(role='user',content=request)],structured=True,max_tokens=160)
+    from app.assistant.engine import parse_reply
+    reply=parse_reply(response)
+    if reply.get('tool_calls') or not reply.get('answer'):
+        return None
+    return dict(text=spoken_answer(reply['answer']),changes=[],sources=[],operation_id=None,
+                evidence=dict(tools=[],performance=getattr(client,'last_timings',{}),route='social'))

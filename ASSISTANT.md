@@ -248,3 +248,43 @@ Unsupported filters or additional actions stay in the ordinary tool planner; thi
 routine never silently drops them. Cancellation, API errors and incomplete results
 cannot become a successful subject list. The final-reply guard also rejects
 announcements such as “give me a second to fetch them” as a completed email answer.
+
+
+## Action reliability and prepared email reviews
+
+Peter is a local application using the selected LM Studio model. Instructions are
+system-prompt text, tool schemas and actual retrieved results. NexusDesk does not
+load Codex SKILL.md files or acquire a new brain from a behaviour document. Ordinary
+workspace planning still uses the model; application code executes and verifies
+writes. General dialogue is not an execution engine or a background task queue.
+
+Explicit deletion of all unscheduled tasks now uses `workspace_actions.py`: inspect
+the full live calendar, select only tasks with no date, commit once, verify and
+retain undo. Dated all-day tasks remain dated. Requests for a Gmail link select
+validated stored message metadata and return an actual source button immediately.
+Promised actions and invented workspace searches fail reply checks.
+
+`mail_flow.py` prepares bounded email reviews by local date/period, with optional
+fuzzy From/Cc matching (spacing, case, accents and close spelling). It fetches full
+messages, inventories and downloads attachments, and prepares an expiring private
+cache using AI Library extraction, chunking and retrieval. The report and texts can
+be opened from chat history in AI Library. No email or attachment instructions can
+execute tools. Only gmail.readonly is requested; sending/modifying mail is absent.
+
+The cache has a 24-hour validity window and is cleaned up on subsequent cache use.
+Email review facts are selected source sentences, never generated paraphrases:
+Peter and AI Library both render the checked original text. A separately labelled
+assessment is available when asked. Unknown/unreadable attachments remain explicit;
+scanned PDFs without text require opening/checking in Gmail. PDF, DOCX, text, HTML
+and EPUB extraction is supported. Limits are explicit: 300 matched messages per
+review, 20 MiB per attachment and 100 MiB per collection by default. Truncation,
+failed downloads and incomplete participant headers are reported, not interpreted
+as proof of no messages or no attachments. Unsupported extra filters prompt a
+clarification rather than being silently discarded.
+
+A short social prompt avoids sending the full workspace catalogue for greetings
+and thanks. `library/chat.py` records numeric request timings and token counts,
+without logging message contents. More context and extra model/tool rounds increase
+latency; they do not change the model's underlying capability. Email reports and
+clear bulk actions do not require model inference. Detailed email questions use a
+small evidence selection prompt on the same local model.

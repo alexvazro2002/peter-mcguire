@@ -40,6 +40,8 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 API_URL = "https://gmail.googleapis.com/gmail/v1/users/me"
 SETUP_MESSAGE = ("Gmail is not connected. Add a Google Cloud Desktop OAuth client JSON with the Gmail API enabled "
                  "in Settings, then choose Connect Gmail. Peter requests read-only inbox access.")
+MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+MAX_INLINE_ATTACHMENT_BYTES = 4 * 1024 * 1024
 
 
 class GmailError(RuntimeError):
@@ -102,28 +104,92 @@ class _PlainHTML(HTMLParser):
             self.parts.append(data)
 
 
-def _header(value):
+def _header(value, limit=1000):
     try:
         pieces = [chunk.decode(charset or "utf-8", errors="replace") if isinstance(chunk, bytes) else chunk
                   for chunk, charset in decode_header(str(value or ""))]
     except (LookupError, ValueError):
         pieces = [str(value or "")]
-    return _clean("".join(pieces), 1000)
+    return _clean("".join(pieces), limit)
 
 
 def message_data(message, *, account=None, headers_only=False):
-    """Return bounded plain text; never fetch remote resources or attachments."""
-    payload = message.get("payload") or {}
-    headers = {str(h.get("name", "")).lower(): _header(h.get("value", ""))
-               for h in payload.get("headers", []) if isinstance(h, dict)}
-    plain, rich, body_limits = [], [], []
+    """Return bounded text and an honest MIME inventory, without fetching files."""
+    raw_payload = message.get("payload")
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    raw_headers = payload.get("headers", [])
+    participant_headers_complete = recipient_headers_complete = isinstance(raw_payload, dict) and isinstance(raw_headers, list)
+    headers = {}
+    for row in raw_headers if isinstance(raw_headers, list) else []:
+        if not isinstance(row, dict):
+            participant_headers_complete = recipient_headers_complete = False
+            continue
+        name = str(row.get("name", "")).lower()
+        limit = 16000 if name in {"from", "to", "cc"} else 1000
+        value = _header(row.get("value", ""), limit + 1)
+        if name in {"from", "to", "cc"} and headers.get(name):
+            value = headers[name] + ", " + value
+        if len(value) > limit:
+            if name in {"from", "cc"}:
+                participant_headers_complete = False
+            if name in {"to", "cc"}:
+                recipient_headers_complete = False
+        headers[name] = value[:limit]
+    plain, rich, body_limits, attachments = [], [], [], []
+    inventory_complete, parts_seen, inline_bytes = not headers_only and isinstance(raw_payload, dict), 0, 0
+    body_unavailable = False
 
-    def visit(part, depth=0):
-        if depth > 20 or part.get("filename"):
+    def visit(part, depth=0, inside_file=False):
+        nonlocal inventory_complete, parts_seen, inline_bytes, body_unavailable
+        parts_seen += 1
+        if depth > 20 or parts_seen > 1000 or not isinstance(part, dict):
+            inventory_complete = False
             return
-        mime = part.get("mimeType", "")
-        data = (part.get("body") or {}).get("data")
-        if data and mime in {"text/plain", "text/html"}:
+        mime = _clean(part.get("mimeType", ""), 200).lower()
+        body = part.get("body") or {}
+        if not isinstance(body, dict):
+            body = {}; inventory_complete = False
+        data, attachment_id = body.get("data"), body.get("attachmentId")
+        filename = _header(part.get("filename", ""))
+        disposition = next((str(h.get("value", "")) for h in part.get("headers", [])
+                            if isinstance(h, dict) and str(h.get("name", "")).lower() == "content-disposition"), "")
+        is_file = bool(filename or re.match(r"attachment(?:\s|;|$)", disposition, re.I)
+                       or mime and not mime.startswith("multipart/") and mime not in {"text/plain", "text/html"}
+                       and (data or attachment_id))
+        if is_file:
+            if len(attachments) >= 100:
+                inventory_complete = False
+            else:
+                try:
+                    size = max(0, int(body.get("size", 0)))
+                except (ValueError, TypeError):
+                    size = 0; inventory_complete = False
+                item = dict(part_id=_clean(part.get("partId", ""), 128), filename=filename,
+                            mime_type=mime, size=size, attachment_id="", inline_data="",
+                            inline_data_truncated=False)
+                if attachment_id:
+                    try:
+                        item["attachment_id"] = _attachment_id(attachment_id)
+                    except GmailError:
+                        inventory_complete = False
+                if data:
+                    # Keep inline file bytes available for the private review
+                    # cache; never confuse a truncated representation with a
+                    # complete downloadable attachment.
+                    room = MAX_INLINE_ATTACHMENT_BYTES - inline_bytes
+                    if isinstance(data, str) and len(data) <= (room + 2) // 3 * 4:
+                        try:
+                            decoded = _attachment_bytes(data, room)
+                            item["inline_data"] = data
+                            inline_bytes += len(decoded)
+                        except GmailError:
+                            item["inline_data_truncated"] = True
+                    else:
+                        item["inline_data_truncated"] = True
+                attachments.append(item)
+        elif not inside_file and mime in {"text/plain", "text/html"} and attachment_id and not data:
+            body_unavailable = True; body_limits.append(True)
+        if not is_file and not inside_file and data and mime in {"text/plain", "text/html"}:
             # Bodies are base64url in the Gmail full-message API. Large bodies
             # are truncated locally; attachment IDs are deliberately ignored.
             try:
@@ -144,9 +210,16 @@ def message_data(message, *, account=None, headers_only=False):
                     parser = _PlainHTML(); parser.feed(text); rich.append("".join(parser.parts))
             except (ValueError, TypeError):
                 pass
-        for child in part.get("parts", [])[:100]:
+        children = part.get("parts", [])
+        if not isinstance(children, list):
+            inventory_complete = False; children = []
+        if len(children) > 100:
+            inventory_complete = False
+        for child in children[:100]:
             if isinstance(child, dict):
-                visit(child, depth + 1)
+                visit(child, depth + 1, inside_file=inside_file or is_file)
+            else:
+                inventory_complete = False
 
     if not headers_only:
         visit(payload)
@@ -157,11 +230,17 @@ def message_data(message, *, account=None, headers_only=False):
         received = 0
     view = next((name.casefold() for name in ('INBOX', 'SPAM', 'TRASH') if name in message.get('labelIds', [])), 'all')
     return dict(id=message_id, thread_id=_clean(message.get("threadId"), 128),
-                sender=headers.get("from", "Unknown sender"), subject=headers.get("subject", "(No subject)"),
+                sender=headers.get("from", "Unknown sender"), to=headers.get("to", ""), cc=headers.get("cc", ""),
+                participant_headers_complete=participant_headers_complete,
+                recipient_headers_complete=recipient_headers_complete,
+                account=account or "", subject=headers.get("subject", "(No subject)"),
                 date=headers.get("date", ""), received_ms=received,
                 snippet="" if headers_only else _clean(html.unescape(message.get("snippet", "")), 1000),
                 body=_clean("\n".join(plain or rich), 16000),
                 body_truncated=bool(body_limits) or len("\n".join(plain or rich).strip()) > 16000,
+                body_unavailable=body_unavailable,
+                attachments=attachments, attachment_inventory_complete=inventory_complete,
+                attachment_inventory_truncated=not headers_only and not inventory_complete,
                 unread="UNREAD" in message.get("labelIds", []),
                 folders=[name for name in ("INBOX", "SPAM", "TRASH", "SENT", "DRAFT") if name in message.get("labelIds", [])],
                 source="gmail", untrusted=True,
@@ -174,6 +253,28 @@ def _message_id(value):
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value):
         raise GmailError("Invalid Gmail message ID.")
     return value
+
+
+def _attachment_id(value):
+    # Attachment IDs are longer opaque base64url identifiers, unlike the short
+    # hexadecimal message ID. Do not allow path/query syntax into API URLs.
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,2048}", value):
+        raise GmailError("Invalid Gmail attachment ID.")
+    return value
+
+
+def _attachment_bytes(data, max_bytes):
+    if not isinstance(data, str) or len(data) > ((max_bytes + 2) // 3) * 4:
+        raise GmailError("The Gmail attachment exceeds the allowed download size.")
+    try:
+        if not re.fullmatch(r"[A-Za-z0-9_-]*={0,2}", data) or len(data.rstrip("=")) % 4 == 1:
+            raise ValueError("Invalid base64url")
+        decoded = base64.b64decode(data + "=" * (-len(data) % 4), altchars=b"-_", validate=True)
+    except (ValueError, TypeError) as error:
+        raise GmailError("Gmail returned invalid attachment data.") from error
+    if len(decoded) > max_bytes:
+        raise GmailError("The Gmail attachment exceeds the allowed download size.")
+    return decoded
 
 
 def _private_json(path, data):
@@ -269,7 +370,7 @@ class GmailClient:
             return dict(state="setup_required" if not self.client_file.is_file() else "sign_in",
                         connected=False, email="", message=str(error), account="")
 
-    def _json_request(self, session, method, url, *, cancel=None, **kwargs):
+    def _json_request(self, session, method, url, *, cancel=None, max_response_bytes=12 * 1024 * 1024, **kwargs):
         _check(cancel)
         try:
             response = session.request(method, url, timeout=(5, 20), allow_redirects=False, stream=True, **kwargs)
@@ -293,7 +394,7 @@ class GmailClient:
                 chunks, size = [], 0
                 for chunk in response.iter_content(65536):
                     _check(cancel); size += len(chunk)
-                    if size > 12 * 1024 * 1024:
+                    if size > max_response_bytes:
                         raise GmailError("Gmail returned an unusually large message. The inbox checkpoint has not advanced.")
                     chunks.append(chunk)
                 result = json.loads(b"".join(chunks))
@@ -332,19 +433,21 @@ class GmailClient:
             _check(cancel); _private_json(self.token_file, token); self._token = token
         return token["access_token"]
 
-    def _api(self, session, path, *, params=None, cancel=None):
+    def _api(self, session, path, *, params=None, cancel=None, max_response_bytes=12 * 1024 * 1024):
         # This surface only implements GET. Sending, labels, deletion and draft
         # mutations are absent and the requested OAuth scope cannot permit them.
         access = self._access(session, cancel)
         try:
             return self._json_request(session, "GET", API_URL + path, params=params,
-                                      headers={"Authorization": "Bearer " + access}, cancel=cancel)
+                                      headers={"Authorization": "Bearer " + access}, cancel=cancel,
+                                      max_response_bytes=max_response_bytes)
         except GmailAPIError as error:
             if error.status != 401:
                 raise
             access = self._access(session, cancel, force=True)
             return self._json_request(session, "GET", API_URL + path, params=params,
-                                      headers={"Authorization": "Bearer " + access}, cancel=cancel)
+                                      headers={"Authorization": "Bearer " + access}, cancel=cancel,
+                                      max_response_bytes=max_response_bytes)
 
     def connect(self, *, cancel=None, on_url=None, budget=180):
         """Authorize in the system browser; call from the controller's worker."""
@@ -475,7 +578,7 @@ class GmailClient:
     def _read(self, session, message_id, cancel, *, headers_only=False):
         params = {"format": "metadata" if headers_only else "full"}
         if headers_only:
-            params["metadataHeaders"] = ["From", "Subject", "Date"]
+            params["metadataHeaders"] = ["From", "To", "Cc", "Subject", "Date"]
         message = self._api(session, "/messages/" + _message_id(message_id), params=params, cancel=cancel)
         return message, message_data(message, account=self._credentials()[1]["account"], headers_only=headers_only)
 
@@ -520,6 +623,26 @@ class GmailClient:
             account, _ = self._profile(session, cancel)
             message, data = self._read(session, message_id, cancel)
             return dict(account=account, message=data, source="gmail", untrusted=True)
+
+    def read_attachment(self, message_id, attachment_id, *, max_bytes=MAX_ATTACHMENT_BYTES, cancel=None):
+        """Fetch account-bound bytes with read-only GET; callers own safe storage."""
+        message_id, attachment_id = _message_id(message_id), _attachment_id(attachment_id)
+        if type(max_bytes) is not int or not 1 <= max_bytes <= MAX_ATTACHMENT_BYTES:
+            raise GmailError("Choose an attachment size limit between 1 byte and 20 MiB.")
+        with self._lock, self._session_factory() as session:
+            self._profile(session, cancel)
+            result = self._api(session, "/messages/" + message_id + "/attachments/" + attachment_id,
+                               cancel=cancel, max_response_bytes=((max_bytes + 2) // 3) * 4 + 65536)
+            size = result.get("size")
+            if type(size) is not int or size < 0:
+                raise GmailError("Gmail returned an invalid attachment size.")
+            if size > max_bytes:
+                raise GmailError("The Gmail attachment exceeds the allowed download size.")
+            decoded = _attachment_bytes(result.get("data"), max_bytes)
+            if len(decoded) != size:
+                raise GmailError("Gmail returned incomplete attachment data.")
+            _check(cancel)
+            return decoded
 
     def sync_new(self, *, cancel=None, batch_size=50):
         """Return durable inbox headers; fetch a body only through explicit read()."""

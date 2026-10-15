@@ -118,7 +118,7 @@ def test_first_check_fetches_recent_headers_and_baselines_all_inbox_ids(configur
     assert result["messages"][0]["body"] == result["messages"][0]["snippet"] == ""
     assert result["messages"][0]["metadata_only"]
     calls = [options for _, url, options in backend.calls if url.endswith("/messages/recent")]
-    assert calls[0]["params"] == {"format": "metadata", "metadataHeaders": ["From", "Subject", "Date"]}
+    assert calls[0]["params"] == {"format": "metadata", "metadataHeaders": ["From", "To", "Cc", "Subject", "Date"]}
     assert not any(url.endswith("/messages/old") for _, url, _ in backend.calls)
     state = json.loads(client.state_file.read_text())["accounts"][backend.account]
     assert "history_id" not in state and state["pending"]["batch_id"] == result["batch_id"]

@@ -2,6 +2,7 @@
 import json
 import queue
 import threading
+import time
 from datetime import datetime, timezone
 
 from app.assistant.engine import Engine
@@ -10,6 +11,9 @@ from app.briefing import DailyBriefing
 from app.config import atomic_write
 from app.memory import MemoryStore
 from app.opening import OpenRequests
+from app.assistant.mail_flow import EmailReviewFlow, link_request
+from app.assistant.workspace_actions import respond as workspace_action
+from app.assistant.conversation import social_request, social_answer
 
 
 class AssistantService:
@@ -20,6 +24,7 @@ class AssistantService:
         self.opening = OpenRequests(vault, zone=zone)
         self.briefing = DailyBriefing(calendar, zone)
         self.email_briefing = None
+        self.mail_flow = EmailReviewFlow(conversation_path.parent, external, runtime, zone) if external is not None else None
         self.history = History(vault, calendar, vault.root / ".history" / "assistant", memory=self.memory)
         self.events, self.cancel, self.lock = queue.Queue(), threading.Event(), threading.RLock()
         self.busy, self.messages, self.warning, self.storage_error = False, [], "", ""
@@ -70,7 +75,17 @@ class AssistantService:
             self.events.put(event)
 
         def work():
+            started = time.monotonic()
             try:
+                direct = workspace_action(request, conversation, self.vault, self.calendar, self.history, self.cancel)
+                if direct is not None:
+                    emit(type='answer', **direct)
+                    return
+                if self.mail_flow is not None and link_request(request):
+                    linked = self.mail_flow.respond(request, conversation, self.cancel, emit)
+                    if linked is not None:
+                        emit(type='answer', **linked)
+                        return
                 opened = self.opening.respond(request, conversation, self.external, self.cancel)
                 if opened is not None:
                     emit(type="answer", **opened)
@@ -84,15 +99,26 @@ class AssistantService:
                     if email is not None:
                         emit(type="answer", **email)
                         return
+                if self.mail_flow is not None:
+                    email = self.mail_flow.respond(request, conversation, self.cancel, emit)
+                    if email is not None:
+                        emit(type='answer', **email)
+                        return
                 quick = self.external.quick_answer(request, self.zone, cancel=self.cancel, conversation=conversation) if self.external is not None else None
                 if quick is not None:
                     emit(type="answer", **quick)
                     return
                 emit(type="status", message="Connecting to your local model")
                 self.runtime.ensure()
+                if social_request(request):
+                    social = social_answer(request, conversation, self.runtime.client)
+                    if social is not None:
+                        emit(type='answer', **social)
+                        return
                 engine = Engine(self.vault, self.calendar, self.history, self.runtime.client,
                                 self.runtime.settings, self.zone, external=self.external)
                 result = engine.run(request, conversation, emit, self.cancel)
+                result.setdefault('evidence', {})['request_seconds'] = round(time.monotonic()-started, 3)
                 emit(type="answer", **result)
             except Exception as error:
                 emit(type="error", message=str(error))

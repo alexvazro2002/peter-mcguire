@@ -36,6 +36,7 @@ class Librarian:
         if self.model.get_sentence_embedding_dimension() != self.index.d:
             raise ValueError("Embedding model dimension does not match this index.")
         self.settings = settings
+        self.review_directory = paths.source.parent if (paths.source.name == 'texts' and paths.source.parent.parent.name == 'email-review') else None
         self.documents = len({m["source"] for m in self.metadata})
         self.sources = sorted({m["source"] for m in self.metadata}, key=str.casefold)
         self.keywords, self.cache = KeywordIndex(self.metadata), OrderedDict()
@@ -74,6 +75,8 @@ class Librarian:
         results = self.search(question, source) if source else self.search(question)
         if not results:
             raise ValueError("No evidence found in this library.")
+        if getattr(self, 'review_directory', None) is not None:
+            return self._ask_email_review(question, results)
         # Budget for 8k legacy servers as well as the configurable new 16k server.
         evidence, length = [], 0
         used = []
@@ -92,3 +95,32 @@ class Librarian:
                 {"role": "user", "content": f"Question: {question}\n\nRetrieved evidence:\n" + "\n".join(evidence)},
             ])
         return message["content"], used
+
+
+    def _ask_email_review(self, question, results):
+        """Prepared email libraries share Peter's source-selection safeguards."""
+        import time
+        import threading
+        from types import SimpleNamespace
+        from app.assistant.mail_review import _json, EmailReview
+        from app.assistant.mail_flow import answer_review
+        from app.gmail import GmailClient
+        from app.config import load_config
+        manifest = _json(self.review_directory / 'manifest.json')
+        if manifest.get('corpus_id') != self.review_directory.name or manifest.get('expires_at',0) <= time.time():
+            raise ValueError('This temporary email review expired. Ask Peter to prepare it again.')
+        status = GmailClient(load_config().get('gmail')).status()
+        account = status.get('account') or status.get('email','')
+        if not status.get('connected') or account.casefold() != manifest['account'].casefold():
+            raise ValueError('The Gmail account changed. Prepare the review again for the connected account.')
+        passages=[]
+        for item in results:
+            message=next((m for m in manifest['messages'] if m.get('url') and m['url'] in item['source']),None)
+            if message:
+                passages.append(dict(item,message_id=message['id'],source=message['subject'],sender=message['sender'],date=message['date']))
+        evidence=dict(passages=passages,sources=EmailReview._sources(manifest,manifest['messages']),
+                      inventories=manifest['messages'],corpus_id=manifest['corpus_id'])
+        adapter=SimpleNamespace(search=lambda *a,**k:evidence,summary=lambda:dict(text_directory=str(self.review_directory/'texts')))
+        runtime=SimpleNamespace(ensure=lambda:None,client=ChatClient(self.settings))
+        reply=answer_review(adapter,question,runtime,threading.Event(),lambda **event:None)
+        return reply['text'],results

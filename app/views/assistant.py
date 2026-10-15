@@ -147,6 +147,14 @@ class AssistantView:
                 contents.append(ft.Row([ft.TextButton("Memory" if s["kind"] == "memory" else s.get("title") or s.get("name") or s.get("path") or s.get("date") or "Unscheduled",
                                                       icon=ft.Icons.NORTH_EAST, on_click=lambda e, src=s: self.source(src),
                                                       style=ft.ButtonStyle(color=c["cyan"])) for s in message["sources"]], wrap=True, spacing=4))
+            report_path = (message.get('evidence') or {}).get('email_report_path')
+            if report_path:
+                contents.append(ft.TextButton('Open email review report', icon=ft.Icons.DESCRIPTION_OUTLINED,
+                    on_click=lambda e, path=report_path: self.source(dict(kind='file',path=path,title='Email review report'))))
+            review_directory = (message.get('evidence') or {}).get('email_review_directory')
+            if review_directory:
+                contents.append(ft.TextButton('Review these emails in AI Library', icon=ft.Icons.MENU_BOOK_OUTLINED,
+                    on_click=lambda e, directory=review_directory: self.app.start_library(directory, model_selected=True)))
             operation_id = message.get("operation_id")
             if operation_id and operation_id in committed:
                 count = len(message.get("changes", []))

@@ -12,6 +12,8 @@ from app.assistant.transactions import Transaction
 from app.assistant.conversation import SPOKEN_STYLE, conversation_messages, reference_context, spoken_answer
 from app.assistant.grounding import unsupported_reply
 from app.assistant.mail_search import email_search_plan
+from app.assistant.action_grounding import action_problem
+from app.assistant.workspace_actions import respond as workspace_action
 from app.assistant.personal_grounding import TRUTH_RULES, personal_problem, personal_fallback
 from app.assistant.completion import completion_plan, completion_problem, completion_guidance, explicit_compound_actions
 
@@ -223,6 +225,9 @@ class Engine:
             subjects = subject_answer(request, conversation, self.external.gmail, self.zone, cancel=cancel, now=self.now)
             if subjects is not None:
                 return subjects
+        direct = workspace_action(request, conversation, self.vault, self.calendar, self.history, cancel)
+        if direct is not None:
+            return direct
         self.history.recover()
         access = self.external.for_request(request, conversation) if self.external is not None else None
         if access is not None and getattr(access, 'ambiguous_email', False):
@@ -352,6 +357,7 @@ class Engine:
                 problem = unsupported_reply(request, answer, access, verified_results, tx.sources,
                                             clarification=not reply.get('apply_changes', True),
                                             prior_action=next((row.get('evidence') for row in reversed(conversation) if row.get('role') == 'assistant'), None))
+                problem = action_problem(request, answer, verified_results, clarification=not reply.get('apply_changes',True)) or problem
                 personal_issue = personal_problem(request, answer, verified_results, conversation, memories)
                 problem = personal_issue or problem
                 if problem:
