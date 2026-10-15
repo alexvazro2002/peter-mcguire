@@ -20,7 +20,8 @@ def verify(root):
             return False
     return all((root / name).is_file() for name in ("tokens.txt", "LICENSE", "espeak-ng-data/phontab",
                "espeak-ng-data/phonindex", "espeak-ng-data/phondata", "espeak-ng-data/en_dict",
-               "espeak-ng-data/intonations", "espeak-ng-data/lang/gmw/en"))
+               "espeak-ng-data/intonations", "espeak-ng-data/lang/gmw/en", "espeak-ng-data/es_dict",
+               "espeak-ng-data/lang/roa/es"))
 
 
 def main(argv=None):
@@ -39,8 +40,9 @@ def main(argv=None):
     if not verify(root):
         raise RuntimeError("British voice integrity checks failed. No voice was selected.")
     (root / "peter-provenance.json").write_text(json.dumps(dict(repo_id=REPO, revision=REVISION,
-        sha256=HASHES, voice="bm_george", speaker_id=26, language="en-gb"), indent=2) + "\n", encoding="utf-8")
-    print("British male voice installed and verified.", flush=True)
+        sha256=HASHES, voice="bm_george", speaker_id=26, language="en-gb",
+        spanish_voice="em_alex", spanish_speaker_id=29, languages=["en-gb", "es"]), indent=2) + "\n", encoding="utf-8")
+    print("British and Spanish male voices installed and verified.", flush=True)
     return 0
 
 

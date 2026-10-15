@@ -1,5 +1,34 @@
 # Peter (McGuire) — verification record
 
+## 15 October: natural speech and automatic action recovery
+
+The updated source passes **896 tests in 31.24 seconds** with the installed Python
+3.11 environment, including actual loopback HTTP fixtures. Coverage includes
+untouched date/time captions with voice-only normalization, English/Spanish
+language detection, native Spanish speaker selection, queued progress speech,
+cancellation, verified email reply tasks, duplicate prevention, undo, and safe
+automatic retries before commit. The real missed email reply task was restored
+for 15 October at 20:00 with its verified Gmail link and an undoable operation.
+
+Actual local Kokoro audio was generated English → Spanish → English using
+bm_george / em_alex / bm_george at 1.15× speed. Local transcription read back all
+three synthetic samples correctly; no test audio was played through host speakers.
+The installed Spanish dictionaries and phonemizer were used without downloading
+another speech model. A deterministic local language detector uses bundled English
+and Spanish profiles; no email content leaves the machine for speech synthesis.
+
+A live recovery test deliberately used a primary model that only claimed success.
+Peter automatically selected the already installed LM Studio Gemma 4 E4B model,
+saved the exact synthetic note contents in temporary storage, and committed once.
+The configured normal Qwen model remained unchanged. That cold retry took 57.503
+seconds; a warm three-round note write took 52.442 seconds, so fallback remains
+slower than ordinary answers. Both acknowledge progress before doing model work.
+Clear current-email reply tasks bypass model planning and its retry delay.
+
+These are measured checks, not a guarantee about every pronunciation, language
+fragment or abstract request. Source backup excludes real email, calendar, notes,
+conversation, credentials and runtime/cache files.
+
 Checked 13 October 2026 on this Fedora installation. This record separates actual
 local API and installation checks from tests using synthetic services and data.
 

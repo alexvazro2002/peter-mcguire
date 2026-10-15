@@ -1,6 +1,7 @@
 """Explicit email retrieval/reporting and evidence-only local Library questions."""
 import json
 import re
+import calendar
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
@@ -9,6 +10,7 @@ from app.assistant.conversation import spoken_answer
 from app.assistant.mail_subjects import subject_answer
 from app.integrations import request_text, _source_email
 from app.assistant.mail_review import EmailReview
+from app.assistant.progress import workspace_write_request
 
 MAIL = r'\b(?:emails?|gmail|mail|inbox)\b'
 NUMBERS = {'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'fourteen':14,'thirty':30}
@@ -27,13 +29,20 @@ def review_plan(request, now, zone):
     if re.search(r'\b(?:and|then)\s+(?:(?:also|please)\s+)*(?:tell|check|show|read|search|what)\b',text,re.I):
         return None
     date, start, end = '', None, None
-    period = re.search(r'\b(?:past|last)\s+(\d{1,3}|' + '|'.join(NUMBERS) + r')\s+(days?|weeks?)\b', text, re.I)
+    period = re.search(r'\b(?:past|last)\s+(\d{1,3}|' + '|'.join(NUMBERS) + r')\s+(days?|weeks?|months?)\b', text, re.I)
     if period:
         count = int(period[1]) if period[1].isdigit() else NUMBERS[period[1].lower()]
-        days = count * (7 if period[2].lower().startswith('week') else 1)
-        if not 1 <= days <= 366:
+        months = period[2].lower().startswith('month')
+        days = count * (31 if months else 7 if period[2].lower().startswith('week') else 1)
+        if not (1 <= count <= 12 if months else 1 <= days <= 366):
             return dict(clarification='Choose a period of up to a year for one email review.')
-        start, end = now - timedelta(days=days), now
+        if months:
+            month_index = now.year * 12 + now.month - 1 - count
+            year, month = divmod(month_index, 12)
+            start = now.replace(year=year, month=month+1, day=min(now.day, calendar.monthrange(year, month+1)[1]))
+        else:
+            start = now - timedelta(days=days)
+        end = now
         date = f'the past {count} {period[2].lower()}'
     else:
         match = re.search(r'\b(?:today|yesterday|last (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\d{4}-\d{2}-\d{2})\b',text,re.I)
@@ -218,7 +227,7 @@ class EmailReviewFlow:
             return None
         if re.search(r'\b(?:and|then)\s+(?:(?:also|please)\s+)*(?:create|add|save|remember|schedule|delete|send)\b',text,re.I):
             return None
-        if re.search(r'\b(?:tasks?|notes?|calendar|reminders?)\b',text,re.I) and re.search(r'\b(?:create|add|save|schedule|delete|remove|update|edit|remember)\b',text,re.I):
+        if workspace_write_request(text):
             return None
         if link_request(text):
             ref=select_reference(text,conversation,strict=True)

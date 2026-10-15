@@ -429,7 +429,7 @@ class Workspace:
 
     def reset_assistant(self):
         briefing = self.assistant.briefing
-        self.assistant.close()
+        self.assistant.shutdown()
         self.model_runtime.close(wait=True)
         self.model_runtime = ModelRuntime(self.cfg["library"])
         self.assistant = AssistantService(self.vault, self.calendar, self.model_runtime,
@@ -640,6 +640,11 @@ class Workspace:
                 if event["type"] == "status":
                     self.assistant_status = event["message"]
                     self.peter_state = "thinking"
+                elif event['type'] == 'acknowledgement':
+                    self.assistant_status = self.peter_status = event['text']
+                    self.peter_state = 'thinking'
+                    if self.cfg.get('peter', {}).get('enabled', True) and self.cfg.get('peter', {}).get('speech_enabled', True):
+                        self.voice.speak(event['text'], enqueue=True, captions=False)
                 elif event["type"] in {"answer", "error"}:
                     self.assistant.busy = False
                     self.assistant_status = "Ready" if event["type"] == "answer" else "Request failed"
@@ -676,7 +681,7 @@ class Workspace:
                         self.peter_model_status = "Local model ready · Shared with AI Library"
                         if self.cfg.get("peter", {}).get("enabled", True) and self.cfg.get("peter", {}).get("speech_enabled", True):
                             self.pending_speech_id = utterance_id(event["text"])
-                            self.voice.speak(event["text"])
+                            self.voice.speak(event["text"], enqueue=True)
                         if event.get("briefing_complete"):
                             self.email_routine_started, self.email_prompt_pending = True, True
                         if event.get("email_briefing_next"):
@@ -799,7 +804,7 @@ class Workspace:
         self.closed = True
         self.library_session.stop()
         self.tool_session.stop()
-        self.assistant.close()
+        self.assistant.shutdown()
         self.gmail.close()
         self.voice.close()
         self.notifier.close()

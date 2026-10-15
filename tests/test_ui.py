@@ -21,7 +21,7 @@ class VoiceDouble:
     def valid_event(self, event): return event.get('generation', 0) == getattr(self, 'generation', 0)
     def set_hands_free(self, enabled): self.hands_free = enabled
     def allow_hands_free(self, allowed): self.allowed = allowed
-    def speak(self, text): self.spoken.append(text)
+    def speak(self, text, **kwargs): self.spoken.append(text)
     def cancel(self): pass
     def close(self): pass
 
@@ -203,6 +203,22 @@ def test_committed_assistant_answer_is_spoken_and_saved_through_existing_service
     assert app.voice.spoken == ["Your calendar is clear."]
 
 
+def test_acknowledgement_keeps_request_busy_and_queues_the_final_voice(peter_ui, monkeypatch):
+    app=peter_ui
+    app.assistant.busy=True
+    calls=[]
+    monkeypatch.setattr(app.voice,'speak',lambda text,**kw:calls.append((text,kw)))
+    before=list(app.assistant.messages)
+    app.assistant.events.put(dict(type='acknowledgement',text='Give me a minute.'))
+    one_poll(app,monkeypatch)
+    assert app.assistant.busy and app.assistant.messages==before
+    assert calls==[('Give me a minute.',dict(enqueue=True,captions=False))]
+    app.assistant.events.put(dict(type='answer',text='The review is ready.',sources=[],changes=[],operation_id=None))
+    one_poll(app,monkeypatch)
+    assert calls[-1]==('The review is ready.',dict(enqueue=True))
+    assert not app.assistant.busy and app.assistant.messages[-1]['text']=='The review is ready.'
+
+
 def test_voice_states_switch_client_played_orb_without_animation_polling(peter_ui, monkeypatch):
     app, orb = peter_ui, peter_ui.home_view.orb
     image = orb.orb_image
@@ -377,7 +393,7 @@ def test_email_offer_waits_for_calendar_speech_then_preserves_exact_prompt(peter
     app.email_briefing.add([queued_email()], account='test@example.test')
     app.assistant.events.put(dict(type='answer', text='Your calendar is clear.',
         sources=[], changes=[], operation_id=None, briefing_complete=True))
-    def speak(text):
+    def speak(text, **kwargs):
         app.voice.spoken.append(text)
         app.voice.state = 'thinking'
     monkeypatch.setattr(app.voice, 'speak', speak)

@@ -37,6 +37,17 @@ def test_abstract_sender_variants_and_missing_period_are_explicit():
     assert review_plan('Read my emails and create a task.',NOW,'Europe/London') is None
 
 
+def test_calendar_month_review_period_supports_the_spoken_three_month_request():
+    plan=review_plan('Peter check my emails from Jose Angel from the past three months.',NOW,'Europe/London')
+    assert plan['participant']=='Jose Angel'
+    assert plan['date_window']['start']=='2026-07-15T18:00:00+01:00'
+    assert plan['date_window']['end']==NOW.isoformat()
+    march=NOW.replace(month=3,day=31)
+    plan=review_plan('Check my emails from Jose Angel for the last 1 month.',march,'Europe/London')
+    assert plan['date_window']['start'].startswith('2026-02-28T18:00')
+    assert 'clarification' not in review_plan('Check emails for the past twelve months.'.replace('twelve','12'),NOW,'Europe/London')
+
+
 def history_for(*messages):
     return [dict(role='user',text='List my latest email subjects.'),dict(role='assistant',text='The subjects are listed.',sources=[dict(kind='email',id=m['id'],account='me@example.test',url=m['url'],title=m['subject']) for m in messages])]
 
@@ -110,6 +121,8 @@ def test_service_bulk_delete_reads_live_tasks_and_never_loads_model(tmp_path):
     service=AssistantService(vault,calendar,SimpleNamespace(ensure=lambda:pytest.fail('Deletion must not need model')),tmp_path/'chat.json')
     service.send('Can you delete all my unscheduled tasks?')
     result=service.events.get(timeout=2)
+    while result['type'] == 'acknowledgement':
+        result=service.events.get(timeout=2)
     assert result['type']=='answer' and result['operation_id']
     assert len(calendar.entries())==1 and calendar.entries()[0]['id']=='dated'
 

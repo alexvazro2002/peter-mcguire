@@ -288,3 +288,37 @@ without logging message contents. More context and extra model/tool rounds incre
 latency; they do not change the model's underlying capability. Email reports and
 clear bulk actions do not require model inference. Detailed email questions use a
 small evidence selection prompt on the same local model.
+
+## Natural speech and automatic action recovery
+
+The saved reply and its captions retain the written date, time and source links.
+Only TTS input is normalized: British day/month dates, ISO dates, clock times,
+currency, Markdown and links become natural speech without spelling punctuation.
+For example, `10/10/2026 at 14:15` is spoken as “October tenth at quarter past two
+in the afternoon” when the current year is 2026. Sentence audio remains generated
+ahead and played sequentially, with captions appearing when each sentence starts.
+
+English uses the existing British male voice. Spanish passages use Kokoro's native
+Spanish male `em_alex` speaker and Spanish phonemizer. Detection runs locally per
+sentence, using lexical clues and bundled English/Spanish language profiles;
+uncertain short fragments retain the configured language. This changes pronunciation,
+not the email's language or content. No email text is sent to a speech cloud service.
+
+Long email reviews and workspace changes first queue a brief acknowledgement.
+Other requests that take more than two seconds also receive one. These are progress
+events, not completed answers or extra conversation-history entries. The final
+answer queues after the acknowledgement instead of cancelling it. Review periods
+include calendar months, with month-end dates clamped to the last valid day.
+
+A clear request to create a dated reply task from the current email uses the actual
+stored email reference, date/time validation and one undoable transaction, including
+the real Gmail URL in task details. Dictation such as `U8PM` is accepted as `8pm`.
+Repeating the same request does not create another identical task. Ambiguous targets
+require clarification; additional work continues to the general planner.
+
+If a model repeatedly fails its action protocol, the app retries the full original
+request once with a different installed LM Studio instruction model. Only failures
+before a transaction commit can trigger this retry. Staged primary-model writes are
+discarded, and storage/commit failures do not cause a second write attempt. The
+normal model choice remains unchanged. A successful retry reports verified saved
+changes; if both models fail, the app reports that nothing was saved.

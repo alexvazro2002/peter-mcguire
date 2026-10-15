@@ -26,12 +26,14 @@ import time
 import wave
 from array import array
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
 from app.config import BASE_DIR, DATA_DIR
 from app.speech import speech_segments
+from app.speech_rendering import render_speech, speech_language
 from app.hands_free import UtteranceDetector
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,9 @@ class VoiceController:
         self.events, self.state = queue.Queue(), "idle"
         self._session_factory, self._which, self._popen = session_factory, which, popen
         self._lock, self._closed = threading.RLock(), threading.Event()
-        self._pending = queue.Queue(maxsize=1)
+        # An acknowledgement and the finished answer share one ordered worker.
+        # Keeping both queued prevents the answer from cutting off “Give me a sec”.
+        self._pending = queue.Queue(maxsize=8)
         self._generation = 0
         self._active_cancel = threading.Event()
         self._record_stop = threading.Event()
@@ -116,19 +120,22 @@ class VoiceController:
         if self._closed.is_set() or cancelled.is_set():
             raise _Cancelled()
 
-    def _submit(self, operation, text=""):
+    def _submit(self, operation, text="", *, enqueue=False, captions=True):
         if self._closed.is_set() or not self.settings.get("enabled", True):
             return
-        self.cancel()
+        if not enqueue:
+            self.cancel()
         with self._lock:
-            task = (operation, text, threading.Event(), self._generation)
-            try:
-                self._pending.get_nowait()
-            except queue.Empty:
-                pass
-            self._record_stop = threading.Event()
+            self._auto_allowed.clear()
+            payload = (text, False) if operation == 'speak' and not captions else text
+            task = (operation, payload, threading.Event(), self._generation)
+            if not enqueue:
+                self._record_stop = threading.Event()
             self._manual_requested = operation == "record"
-            self._pending.put_nowait(task)
+            try:
+                self._pending.put_nowait(task)
+            except queue.Full:
+                raise VoiceError('The speech queue is full. Wait for Peter to finish speaking.')
         self._status("thinking", "Preparing local voice" if operation != "record" else "Opening microphone")
 
     def startup(self, text=None):
@@ -162,10 +169,10 @@ class VoiceController:
         else:
             self._submit("record")
 
-    def speak(self, text):
+    def speak(self, text, *, enqueue=False, captions=True):
         text = spoken_text(text)
         if text and self.settings.get("speech_enabled", True):
-            self._submit("speak", text)
+            self._submit("speak", text, enqueue=enqueue, captions=captions)
 
     def cancel(self):
         with self._lock:
@@ -175,10 +182,11 @@ class VoiceController:
             self._active_cancel.set()
             self._manual_requested = False
             self._record_stop.set()
-            try:
-                self._pending.get_nowait()
-            except queue.Empty:
-                pass
+            while True:
+                try:
+                    self._pending.get_nowait()
+                except queue.Empty:
+                    break
             processes = list(self._processes)
         for process in processes:
             self._stop_process(process)
@@ -218,7 +226,8 @@ class VoiceController:
                 elif operation == 'hands_free':
                     self._transcribe_pcm(session, text, cancelled, automatic=True)
                 elif operation == "speak":
-                    self._speak(session, text, cancelled)
+                    text, captions = text if isinstance(text, tuple) else (text, True)
+                    self._speak(session, text, cancelled, captions=captions)
                 elif operation == "startup":
                     greeting = (self.settings.get("greeting", "Hello. I'm Peter McGuire. Your workspace is ready.")
                                 if text is None else text)
@@ -301,15 +310,15 @@ class VoiceController:
         if any(path not in paths for path in ("/v1/audio/speech", "/v1/audio/transcriptions")):
             raise VoiceError("The local service does not expose VoiceStudio's speech and transcription APIs.")
 
-    def _speak(self, session, text, cancelled):
+    def _speak(self, session, text, cancelled, *, captions=True):
         if not text:
             return
         player = self._which("pw-play") or self._which("aplay")
         if not player:
             raise VoiceError("Install pipewire-utils or alsa-utils to play Peter's speech.")
         model = self.settings.get("voice_model", "kittentts")
-        if model == "kokoro-onnx":
-            self._speak_british(text, player, cancelled)
+        if model == "kokoro-onnx" or any(speech_language(chunk) == 'es' for chunk in speech_segments(text)):
+            self._speak_british(text, player, cancelled, captions=captions)
             return
         catalogue = self._json(session, "/models", cancelled)
         models = catalogue.get("models", []) if isinstance(catalogue, dict) else []
@@ -330,8 +339,13 @@ class VoiceController:
                         self._wait_for_space(directory, index, stop)
                         audio = directory / f'{index:04d}.wav'
                         partial = directory / f'{index:04d}.partial'
+                        rendered = render_speech(chunk, language=speech_language(chunk), now=datetime.now().astimezone())
+                        if not any(character.isalnum() for character in rendered):
+                            self._silent_clip(partial)
+                            partial.replace(audio)
+                            continue
                         response = self._request(producer_session, "POST", "/v1/audio/speech", stop, stream=True,
-                            json=dict(model=model, input=chunk, voice=self.settings.get("voice_id", "expr-voice-2-m"),
+                            json=dict(model=model, input=rendered, voice=self.settings.get("voice_id", "expr-voice-2-m"),
                                       response_format="wav", speed=float(self.settings.get("voice_speed", 1.0))))
                         try:
                             size = 0
@@ -346,10 +360,10 @@ class VoiceController:
                             response.close()
                         self._validate_wav(partial)
                         partial.replace(audio)
-            self._sentence_pipeline(text, directory, produce, player, cancelled, finished=finished)
+            self._sentence_pipeline(text, directory, produce, player, cancelled, finished=finished, captions=captions)
 
-    def _speak_british(self, text, player, cancelled):
-        """Use the installed runtime's real British stock voice; keep synthesis cancellable."""
+    def _speak_british(self, text, player, cancelled, *, captions=True):
+        """Use native English/Spanish stock voices while retaining the written captions."""
         runtime = Path(self.settings.get("voice_runtime") or BASE_DIR / ".runtime" / "VoiceStudio").expanduser()
         python = runtime / ".venv" / "bin" / "python"
         models = Path(self.settings.get("british_voice_path") or DATA_DIR / ".runtime" / "british-voice").expanduser()
@@ -362,14 +376,27 @@ class VoiceController:
         if pitch and not ffmpeg:
             raise VoiceError("Install FFmpeg to apply Peter's deeper voice pitch.")
         self._status("thinking", "Generating the first sentence", cancelled)
+        english_voice = self.settings.get('voice_id', 'bm_george')
+        if english_voice not in {'bm_daniel', 'bm_fable', 'bm_george', 'bm_lewis'}:
+            english_voice = 'bm_george'
         with self._speech_directory() as (directory, finished):
             def produce(chunks, stop):
                 content = directory / 'sentences.json'
-                content.write_text(json.dumps(chunks), encoding='utf-8')
+                spoken = []
+                for chunk in chunks:
+                    language = speech_language(chunk, default=self.settings.get('voice_language', 'en'))
+                    rendered = render_speech(chunk, language=language, now=datetime.now().astimezone())
+                    if not any(character.isalnum() for character in rendered):
+                        rendered = ''
+                    if language == 'es':
+                        spoken.append(dict(text=rendered, language='es', voice='em_alex'))
+                    else:
+                        spoken.append(rendered)
+                content.write_text(json.dumps(spoken, ensure_ascii=False), encoding='utf-8')
                 content.chmod(0o600)
                 self._run_audio([str(python), str(BASE_DIR / "scripts" / "british_voice.py"),
                     "--model-dir", str(models), "--segments-file", str(content), "--output-dir", str(directory),
-                    "--voice", self.settings.get("voice_id", "bm_george"), "--speed", str(speed)],
+                    "--voice", english_voice, "--speed", str(speed)],
                     stop, limit=min(3600, self.timeout * len(chunks)), private=True)
             def prepare(original):
                 if not pitch:
@@ -379,7 +406,7 @@ class VoiceController:
                     "-af", f"rubberband=tempo=1:pitch={2 ** (pitch / 12):.8f}:formant=preserved",
                     "-c:a", "pcm_s16le", str(audio)], cancelled, limit=30)
                 return audio
-            self._sentence_pipeline(text, directory, produce, player, cancelled, prepare=prepare, finished=finished)
+            self._sentence_pipeline(text, directory, produce, player, cancelled, prepare=prepare, finished=finished, captions=captions)
 
     @contextmanager
     def _speech_directory(self):
@@ -404,7 +431,7 @@ class VoiceController:
             self._check(cancelled)
             cancelled.wait(.05)
 
-    def _sentence_pipeline(self, text, directory, produce, player, cancelled, *, prepare=lambda path: path, finished=None):
+    def _sentence_pipeline(self, text, directory, produce, player, cancelled, *, prepare=lambda path: path, finished=None, captions=True):
         """One producer, one player: ordered clips, bounded lookahead and cancellable pauses."""
         chunks, producer_stop = speech_segments(text), threading.Event()
         if not chunks:
@@ -447,8 +474,9 @@ class VoiceController:
                     self._status('speaking', 'Peter is speaking', cancelled)
                     with self._lock:
                         self._check(cancelled)
-                        self.events.put(dict(type='voice_caption', text=chunk, seconds=duration,
-                                             utterance_id=utterance_id(text), index=index, total=len(chunks)))
+                        if captions:
+                            self.events.put(dict(type='voice_caption', text=chunk, seconds=duration,
+                                                 utterance_id=utterance_id(text), index=index, total=len(chunks)))
                 self._run_audio([player, str(audio)], cancelled, limit=180, on_start=playback_started)
                 original.unlink(missing_ok=True)
                 if audio != original:
@@ -468,6 +496,16 @@ class VoiceController:
             for process in owned:
                 self._stop_process(process)
             producer.join(timeout=min(2, self.timeout))
+
+    @staticmethod
+    def _silent_clip(path):
+        # A visual-only link still receives its original caption, without
+        # submitting an empty utterance to TTS or inventing spoken content.
+        with wave.open(str(path), 'wb') as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(24000)
+            audio.writeframes(b'\0\0' * 1200)
 
     @staticmethod
     def _trim_silence(path):

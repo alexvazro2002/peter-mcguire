@@ -14,6 +14,9 @@ from app.opening import OpenRequests
 from app.assistant.mail_flow import EmailReviewFlow, link_request
 from app.assistant.workspace_actions import respond as workspace_action
 from app.assistant.conversation import social_request, social_answer
+from app.assistant.model_fallback import ModelToolError, ToolFallback
+from app.assistant.progress import acknowledgement
+from app.assistant.email_tasks import respond as email_task
 
 
 class AssistantService:
@@ -21,6 +24,7 @@ class AssistantService:
         self.vault, self.calendar, self.runtime, self.path, self.zone = vault, calendar, runtime, conversation_path, zone
         self.memory = memory or MemoryStore(conversation_path.parent / "personal-memory.json")
         self.external = external
+        self.tool_fallback = ToolFallback(getattr(runtime, 'settings', {}))
         self.opening = OpenRequests(vault, zone=zone)
         self.briefing = DailyBriefing(calendar, zone)
         self.email_briefing = None
@@ -71,12 +75,36 @@ class AssistantService:
             self.cancel.clear()
             self.busy = True
 
+        progress_lock, finished = threading.Lock(), threading.Event()
+        acknowledged = False
+
         def emit(**event):
-            self.events.put(event)
+            with progress_lock:
+                if event.get('type') in {'answer', 'error'}:
+                    finished.set()
+                self.events.put(event)
+
+        def acknowledge(text='Give me a sec.', *, again=False):
+            nonlocal acknowledged
+            with progress_lock:
+                if finished.is_set() or self.cancel.is_set() or acknowledged and not again:
+                    return
+                acknowledged = True
+                self.events.put(dict(type='acknowledgement', text=text))
 
         def work():
             started = time.monotonic()
+            delayed = threading.Timer(2.0, acknowledge)
+            delayed.daemon = True
+            initial = acknowledgement(request)
+            if initial:
+                acknowledge(initial)
+            delayed.start()
             try:
+                direct = email_task(request, conversation, self.vault, self.calendar, self.history, self.cancel, self.zone)
+                if direct is not None:
+                    emit(type='answer', **direct)
+                    return
                 direct = workspace_action(request, conversation, self.vault, self.calendar, self.history, self.cancel)
                 if direct is not None:
                     emit(type='answer', **direct)
@@ -117,11 +145,28 @@ class AssistantService:
                         return
                 engine = Engine(self.vault, self.calendar, self.history, self.runtime.client,
                                 self.runtime.settings, self.zone, external=self.external)
-                result = engine.run(request, conversation, emit, self.cancel)
+                try:
+                    result = engine.run(request, conversation, emit, self.cancel)
+                except ModelToolError:
+                    if self.cancel.is_set():
+                        raise ValueError('Request cancelled. Nothing was saved.')
+                    acknowledge("Give me a sec. I'll try that another way.", again=True)
+                    emit(type='status', message='Retrying with another installed local model')
+                    fallback = self.tool_fallback.ensure(self.cancel)
+                    engine = Engine(self.vault, self.calendar, self.history, fallback.client,
+                                    fallback.settings, self.zone, external=self.external)
+                    try:
+                        result = engine.run(request, conversation, emit, self.cancel)
+                    except ModelToolError as error:
+                        raise ValueError('Both local models could not complete the action. Nothing was saved. ' + str(error)) from error
+                    result.setdefault('evidence', {})['model_fallback'] = self.tool_fallback.title
                 result.setdefault('evidence', {})['request_seconds'] = round(time.monotonic()-started, 3)
                 emit(type="answer", **result)
             except Exception as error:
                 emit(type="error", message=str(error))
+            finally:
+                finished.set()
+                delayed.cancel()
         threading.Thread(target=work, daemon=True).start()
 
     def undo(self, operation_id):
@@ -140,3 +185,7 @@ class AssistantService:
 
     def close(self):
         self.cancel.set()
+
+    def shutdown(self):
+        self.close()
+        self.tool_fallback.close()
