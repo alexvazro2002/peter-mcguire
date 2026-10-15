@@ -272,9 +272,11 @@ be opened from chat history in AI Library. No email or attachment instructions c
 execute tools. Only gmail.readonly is requested; sending/modifying mail is absent.
 
 The cache has a 24-hour validity window and is cleaned up on subsequent cache use.
-Email review facts are selected source sentences, never generated paraphrases:
-Peter and AI Library both render the checked original text. A separately labelled
-assessment is available when asked. Unknown/unreadable attachments remain explicit;
+Literal email readings select checked original sentences. Summary and translation
+requests instead use short paraphrases of the actual prepared evidence, followed
+by a factual and language check before delivery. Each requested email gets its own
+summary, with evidence kept separate by message. A separately labelled assessment
+is available when asked. Unknown/unreadable attachments remain explicit;
 scanned PDFs without text require opening/checking in Gmail. PDF, DOCX, text, HTML
 and EPUB extraction is supported. Limits are explicit: 300 matched messages per
 review, 20 MiB per attachment and 100 MiB per collection by default. Truncation,
@@ -298,14 +300,16 @@ For example, `10/10/2026 at 14:15` is spoken as “October tenth at quarter past
 in the afternoon” when the current year is 2026. Sentence audio remains generated
 ahead and played sequentially, with captions appearing when each sentence starts.
 
-English uses the existing British male voice. Spanish passages use Kokoro's native
-Spanish male `em_alex` speaker and Spanish phonemizer. Detection runs locally per
+English and Spanish use the same configured British male speaker embedding,
+`bm_george` by default, with identical speed and pitch processing. Spanish changes
+only the phonemizer language. Detection runs locally per
 sentence, using lexical clues and bundled English/Spanish language profiles;
 uncertain short fragments retain the configured language. This changes pronunciation,
 not the email's language or content. No email text is sent to a speech cloud service.
 
-Long email reviews and workspace changes first queue a brief acknowledgement.
-Other requests that take more than two seconds also receive one. These are progress
+Long email reviews first queue a brief professional acknowledgement. Quick workspace
+changes have no spoken preamble. Other requests still running after seven seconds
+receive one. These are progress
 events, not completed answers or extra conversation-history entries. The final
 answer queues after the acknowledgement instead of cancelling it. Review periods
 include calendar months, with month-end dates clamped to the last valid day.
@@ -313,6 +317,8 @@ include calendar months, with month-end dates clamped to the last valid day.
 A clear request to create a dated reply task from the current email uses the actual
 stored email reference, date/time validation and one undoable transaction, including
 the real Gmail URL in task details. Dictation such as `U8PM` is accepted as `8pm`.
+Conversational introductions such as “And Peter” and dotted times such as `9.13 pm`
+are supported, with the same request going directly to a verified task at `21:13`.
 Repeating the same request does not create another identical task. Ambiguous targets
 require clarification; additional work continues to the general planner.
 
@@ -322,3 +328,14 @@ before a transaction commit can trigger this retry. Staged primary-model writes 
 discarded, and storage/commit failures do not cause a second write attempt. The
 normal model choice remains unchanged. A successful retry reports verified saved
 changes; if both models fail, the app reports that nothing was saved.
+
+Model planning is limited to 45 seconds and eight inference calls per attempt;
+each HTTP response wait is bounded by the remaining budget and at most 30 seconds.
+The fallback has a fresh bounded attempt, then reports failure rather than looping
+for minutes. Cancellation and abandoned staged writes still cannot become commits.
+Fallback models loaded by Peter are released before the terminal response, freeing
+GPU memory for ordinary answers. User-preloaded models are not unloaded.
+
+The desktop window starts maximised with its normal frame and title bar. Peter's
+own replies use a professionally warm, lightly playful butler manner; routine
+confirmations and greetings no longer append “sir”. Literal quoted mail is preserved.

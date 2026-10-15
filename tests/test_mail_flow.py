@@ -48,6 +48,22 @@ def test_calendar_month_review_period_supports_the_spoken_three_month_request():
     assert 'clarification' not in review_plan('Check emails for the past twelve months.'.replace('twelve','12'),NOW,'Europe/London')
 
 
+def test_sender_after_the_date_period_is_not_misread_as_the_word_the():
+    plan=review_plan('Can you check all the emails from the past two months from Jose Angel?',NOW,'Europe/London')
+    assert plan['participant']=='Jose Angel'
+    assert plan['date_window']['start']=='2026-08-15T18:00:00+01:00'
+
+
+def test_email_date_sender_correction_inherits_only_the_active_review_topic(tmp_path,monkeypatch):
+    monkeypatch.setattr('app.assistant.mail_flow.local_now',lambda zone:NOW)
+    gmail=Gmail([email()]);flow=EmailReviewFlow(tmp_path,ExternalAccess(gmail=gmail),runtime())
+    result=flow.respond('Check emails from the past two months from Nobody.',[],threading.Event())
+    history=[dict(role='user',text='Check emails from the past two months from Nobody.'),dict(role='assistant',**result)]
+    result=flow.respond('Try for the past two weeks from Jose Angel.',history,threading.Event())
+    assert result['evidence']['matched_total']==1
+    assert 'matching Jose Angel' in result['text']
+
+
 def history_for(*messages):
     return [dict(role='user',text='List my latest email subjects.'),dict(role='assistant',text='The subjects are listed.',sources=[dict(kind='email',id=m['id'],account='me@example.test',url=m['url'],title=m['subject']) for m in messages])]
 

@@ -59,7 +59,7 @@ class DailyBriefing:
         period = "morning" if current.hour < 12 else "afternoon" if current.hour < 18 else "evening"
         with self.lock:
             self.awaiting_ready = True
-        return f"Good {period}, sir. Ready for today?"
+        return f"Good {period}. Shall we see what today has in store?"
 
     def respond(self, request, cancel=None, now=None):
         with self.lock:
@@ -70,7 +70,7 @@ class DailyBriefing:
         _cancelled(cancel)
         phrase = _response_phrase(request)
         if phrase in _NEGATIVE:
-            return dict(text="Very good, sir. I shall leave it for now.", sources=[],
+            return dict(text="Of course. We'll leave it for now.", sources=[],
                         changes=[], operation_id=None, briefing_declined=True)
         if phrase not in _AFFIRMATIVE:
             return None
@@ -101,7 +101,7 @@ class DailyBriefing:
         calendar_items.sort(key=ordering)
         today_tasks.sort(key=ordering)
         overdue.sort(key=ordering)
-        lines = [f"Today's briefing, sir. {today.strftime('%A')}, {today.day} {today.strftime('%B')}."]
+        lines = [f"Here's the day ahead. {today.strftime('%A')}, {today.day} {today.strftime('%B')}."]
         if calendar_items:
             lines.extend(["", "Today's calendar:"])
             lines.extend(self._item_text(item) for item in calendar_items)
@@ -115,7 +115,7 @@ class DailyBriefing:
         if overdue:
             lines.extend(["", "Overdue tasks still pending:"])
             lines.extend(self._item_text(item, overdue=True) for item in overdue)
-        lines.extend(["", "That is the day's schedule. I shall leave it as it stands."])
+        lines.extend(["", "That's the day in order. I'll leave the schedule as it stands."])
         _cancelled(cancel)
         return dict(text="\n".join(lines), changes=[], operation_id=None,
                     sources=[dict(kind="calendar", date=day_string)],

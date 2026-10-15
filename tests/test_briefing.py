@@ -14,13 +14,13 @@ from app.storage import Vault
     (12, 0, "afternoon"), (17, 59, "afternoon"), (18, 0, "evening"), (23, 59, "evening")])
 def test_start_greeting_uses_local_period(hour, minute, period):
     briefing = DailyBriefing(None)
-    assert briefing.start(datetime(2026, 10, 14, hour, minute)) == f"Good {period}, sir. Ready for today?"
+    assert briefing.start(datetime(2026, 10, 14, hour, minute)) == f"Good {period}. Shall we see what today has in store?"
     assert briefing.awaiting_ready
 
 
 def test_greeting_converts_aware_clock_into_london():
     briefing = DailyBriefing(None)
-    assert briefing.start(datetime(2026, 10, 14, 11, 30, tzinfo=timezone.utc)) == "Good afternoon, sir. Ready for today?"
+    assert briefing.start(datetime(2026, 10, 14, 11, 30, tzinfo=timezone.utc)) == "Good afternoon. Shall we see what today has in store?"
 
 
 def test_ready_briefing_includes_all_today_items_and_pending_tasks_without_edits(tmp_path):

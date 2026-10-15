@@ -41,8 +41,8 @@ def main(argv=None):
         raise RuntimeError("British voice integrity checks failed. No voice was selected.")
     (root / "peter-provenance.json").write_text(json.dumps(dict(repo_id=REPO, revision=REVISION,
         sha256=HASHES, voice="bm_george", speaker_id=26, language="en-gb",
-        spanish_voice="em_alex", spanish_speaker_id=29, languages=["en-gb", "es"]), indent=2) + "\n", encoding="utf-8")
-    print("British and Spanish male voices installed and verified.", flush=True)
+        spanish_voice="bm_george", spanish_speaker_id=26, languages=["en-gb", "es"]), indent=2) + "\n", encoding="utf-8")
+    print("Peter's voice installed and verified with English and Spanish pronunciation.", flush=True)
     return 0
 
 

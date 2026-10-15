@@ -1,5 +1,41 @@
 # Peter (McGuire) — verification record
 
+## 15 October: consistent voice, summaries and bounded action planning
+
+The final source passes **991 tests in 31.62 seconds** with the installed Python
+3.11 environment and local HTTP fixtures enabled. The exact stalled request with
+“And Peter” and `9.13 pm`, replayed against the actual conversation in temporary
+storage, created one verified linked task at `21:13` in **0.2058 seconds** with no
+model calls or spoken waiting message. The original stalled run had sent 41 prior
+messages to the planner, retried with Gemma, and continued until the app was closed
+after more than five minutes. The direct parser and bounded model attempts address
+those separate causes; failed staged work still cannot be committed.
+
+Actual English and Spanish synthesis now uses the same `bm_george` speaker 26,
+1.15 speed and +0.8 semitone processing. Only the phonemizer language changes.
+Both samples transcribed correctly; approximate voiced median pitch was 152.9 Hz
+for English and 151.9 Hz for Spanish. This checks settings, intelligibility and
+rough pitch consistency, not a guarantee of identical perception across languages.
+
+The actual cached three-email English summary request completed in **31.21 seconds**
+with two model calls and three verified paraphrases, rather than Spanish excerpts.
+Each message's body and readable attachment evidence contributes separately. The
+check covers factual support and requested language; relative dates are anchored
+to the original message date. Unknown attachments remain explicit. Detailed future
+questions retrieve more evidence instead of treating the brief gist as complete.
+
+Model planning now has a 45-second/eight-call budget per attempt and at most a
+30-second HTTP response wait. The fallback gets one fresh bounded attempt and
+releases only its own temporary model load before delivering an answer or error.
+This prevents its idle model from competing with normal Peter for GPU memory.
+Ownership and cancellation/rollback/resource-cleanup regressions are covered.
+
+The desktop starts maximised with its normal frame. Peter uses a professionally
+warm, lightly playful manner; routine greetings and confirmations no longer append
+“sir”, and quick commands do not receive waiting preambles. Quoted source text is
+preserved. Long reviews and work still running after seven seconds receive a
+brief professional progress acknowledgement.
+
 ## 15 October: natural speech and automatic action recovery
 
 The updated source passes **896 tests in 31.24 seconds** with the installed Python

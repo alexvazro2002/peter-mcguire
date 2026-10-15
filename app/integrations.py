@@ -124,7 +124,7 @@ class ExternalAccess:
         if location is not None:
             location = location or referenced_public_location(conversation)
             if not location:
-                return dict(text='Which city should I check the weather for, sir?', changes=[], sources=[], operation_id=None)
+                return dict(text='Which city should I check the weather for?', changes=[], sources=[], operation_id=None)
             result = self.for_request(request, conversation).current_weather(location)
             condition = _WEATHER.get(result['weather_code'], 'current weather conditions')
             return dict(text=f"It is {result['temperature_c']:g}°C in {result['city']}, with {condition}. "
@@ -136,7 +136,7 @@ class ExternalAccess:
                 raise ValueError('Connect Gmail in Settings first.')
             result = self.gmail.latest(scope=latest_scope, cancel=cancel)
             if not result['messages']:
-                return dict(text='I could not find a received email in that search, sir.', changes=[], sources=[], operation_id=None)
+                return dict(text="I couldn't find a received email in that search.", changes=[], sources=[], operation_id=None)
             row = header_message(result['messages'][0], result['account'])
             row['folders'] = result['messages'][0].get('folders', [])
             source = email_source(row)
@@ -148,10 +148,10 @@ class ExternalAccess:
             result = self.gmail.sync_new(cancel=cancel)
             count = result['count']
             if result.get('first_sync'):
-                text = f"Gmail is connected, sir. I found {count} recent inbox email{'s' if count != 1 else ''} in the first check."
+                text = f"Gmail is connected. I found {count} recent inbox email{'s' if count != 1 else ''} in the first check."
             else:
-                text = (f"I checked your inbox, sir. You have {count} new email{'s' if count != 1 else ''} since the last check."
-                        if count else 'I checked your inbox, sir. There are no new emails since the last check.')
+                text = (f"I checked your inbox. You have {count} new email{'s' if count != 1 else ''} since the last check."
+                        if count else 'I checked your inbox. There are no new emails since the last check.')
             if result.get('has_more'):
                 text += ' More messages follow in the next batch.'
             # "New" uses the durable checkpoint, never an invented today-only

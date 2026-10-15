@@ -1,6 +1,7 @@
 """A second installed LM Studio model for requests abandoned before commit."""
 from pathlib import Path
 import time
+import logging
 
 from library.models import model_choices, selected_settings
 from library.runtime import ModelRuntime
@@ -40,7 +41,9 @@ class ToolFallback:
                 raise ValueError('No alternative installed LM Studio chat model is available. Nothing was saved.')
             choice = available[0]
             candidate = selected_settings(self.settings, choice)
+            candidate.pop('_peter_loaded_alias', None)
             candidate.update(enable_thinking=False, temperature=.1,
+                             startup_timeout=30,
                              context_size=max(16384, int(candidate.get('context_size', 16384))))
             self.runtime, self.title = self.factory(candidate), choice.title
         self.runtime.cancel = cancel
@@ -50,5 +53,23 @@ class ToolFallback:
         return self.runtime
 
     def close(self):
+        self.release()
         if self.runtime is not None:
             self.runtime.close()
+
+    def release(self):
+        """Release only the temporary model Peter loaded for this retry."""
+        if self.runtime is None:
+            return
+        settings = self.runtime.settings
+        alias = settings.get('_peter_loaded_alias')
+        if alias != 'peter-' + settings.get('model_id', ''):
+            return
+        manager = LMStudio(settings)
+        try:
+            loaded = parse_models(manager.run(['ps', '--json'], time.monotonic()+10))
+            if any(row.get('identifier') == alias and matches(row, settings) for row in loaded):
+                manager.run(['unload', alias], time.monotonic()+10)
+            settings.pop('_peter_loaded_alias', None)
+        except (OSError, ValueError, RuntimeError, TimeoutError):
+            logging.getLogger(__name__).warning('Peter could not release its temporary fallback model.')

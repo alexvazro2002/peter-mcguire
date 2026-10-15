@@ -11,6 +11,7 @@ from app.assistant.mail_subjects import subject_answer
 from app.integrations import request_text, _source_email
 from app.assistant.mail_review import EmailReview
 from app.assistant.progress import workspace_write_request
+from app.assistant.mail_summary import summary_request
 
 MAIL = r'\b(?:emails?|gmail|mail|inbox)\b'
 NUMBERS = {'one':1,'two':2,'three':3,'four':4,'five':5,'six':6,'seven':7,'fourteen':14,'thirty':30}
@@ -56,9 +57,11 @@ def review_plan(request, now, zone):
     if quoted:
         participant = quoted[1].strip()
     else:
-        match = re.search(r'\b(?:from|cc|copied to)\s+(.+?)(?=\s+(?:from|over|during|within|since|in|for|past|last|today|yesterday)\b|[?.!]|$)',text,re.I)
-        if match and not re.match(r'(?:last|past|today|yesterday|\d{4}-)',match[1],re.I):
-            participant = re.sub(r'^(?:the\s+)?','',match[1]).strip(' "\'')
+        candidates = re.finditer(r'\b(?:from|cc|copied to)\s+(.+?)(?=\s+(?:from|over|during|within|since|in|for|past|last|today|yesterday)\b|[?.!]|$)',text,re.I)
+        for match in candidates:
+            name = re.sub(r'^(?:the\s+)?','',match[1]).strip(' "\'')
+            if name and name.casefold() not in {'the','all','them'} and not re.match(r'(?:last|past|today|yesterday|\d{4}-)',name,re.I):
+                participant = name
     if start is None:
         if participant:
             return dict(clarification=f'Which date range should I check for {participant}?')
@@ -146,7 +149,11 @@ def link_request(request):
                 or re.fullmatch(r"what(?:'s| is) (?:the |its )?(?:gmail |email )?link[.!?]*",text,re.I))
 
 
-def answer_review(review, request, runtime, cancel, emit):
+def answer_review(review, request, runtime, cancel, emit, conversation=()):
+    from app.assistant.mail_summary import summarize_review
+    summary = summarize_review(review, request, runtime, cancel, emit, conversation)
+    if summary is not None:
+        return summary
     evidence = review.search(request,limit=8,max_chars=11000)
     passages = evidence['passages']
     if not passages:
@@ -217,7 +224,8 @@ class EmailReviewFlow:
         self.external,self.runtime,self.zone=external,runtime,zone
         self.review=EmailReview(root,external.gmail) if external is not None and external.gmail is not None else None
 
-    def respond(self,request,conversation,cancel,emit=lambda **_:None):
+    def respond(self,request,conversation,cancel,emit=lambda **_:None,*,runtime=None):
+        runtime = runtime or self.runtime
         text=request_text(request);gmail=self.external.gmail if self.external is not None else None
         from app.assistant.conversation import social_request
         if social_request(request):
@@ -241,7 +249,10 @@ class EmailReviewFlow:
         subjects=subject_answer(request,conversation,gmail,self.zone,cancel=cancel)
         if subjects is not None:
             return subjects
-        plan=review_plan(request,local_now(self.zone),self.zone)
+        planning_request = request
+        if not re.search(MAIL, text, re.I) and self.review is not None and self.review.load() is not None and re.match(r'\s*(?:try|check|search|look)\b', text, re.I) and re.search(r'\b(?:past|last)\b', text, re.I) and re.search(r'\bfrom\b',text,re.I):
+            planning_request = 'Check emails ' + text
+        plan=review_plan(planning_request,local_now(self.zone),self.zone)
         if plan is not None:
             if 'clarification' in plan:
                 return dict(text=plan['clarification'],sources=[],changes=[],operation_id=None)
@@ -254,7 +265,7 @@ class EmailReviewFlow:
         refs=_references(conversation)
         current_mail=bool(re.search(MAIL,text,re.I))
         other_topic=bool(re.search(r'\b(?:tasks?|calendar|notes?|weather|files?|document|cv)\b',text,re.I) and not current_mail)
-        content = bool(re.search(r'\b(?:read|mean|says?|think|opinion|details?|more|about|explain|attachments?|salary|deadline|summary|summari[sz]e)\b',text,re.I)
+        content = bool(summary_request(text) or re.search(r'\b(?:read|mean|says?|think|opinion|details?|more|about|explain|attachments?|salary|deadline|summary|summari[sz]e)\b',text,re.I)
                        or re.match(r"(?:what|how|why|who|when)\b",text,re.I))
         accepted=bool(re.fullmatch(r'(?:yes|yeah|sure|please do)[.!]*',text,re.I) and conversation and re.search(r'\b(?:read|details|summari[sz]e)\b',conversation[-1].get('text',''),re.I))
         ref=select_reference(request,conversation) if content or accepted else None
@@ -265,7 +276,7 @@ class EmailReviewFlow:
             if ref and (active is None or ref['id'] not in {m['id'] for m in active['messages']}):
                 emit(type='status',message='Reading the actual selected email and checking attachments')
                 self.review.prepare_messages([ref],account=ref['account'],cancel=cancel)
-            return answer_review(self.review,request,self.runtime,cancel,emit)
+            return answer_review(self.review,request,runtime,cancel,emit,conversation)
         if (current_mail or refs and content) and not other_topic:
             return dict(text='Tell me which sender and date range to prepare, or identify an email from the list. I will read the actual messages before answering.',sources=refs,changes=[],operation_id=None)
         return None

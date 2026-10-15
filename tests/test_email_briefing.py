@@ -44,7 +44,7 @@ def offer(client=None):
 
 def test_offer_is_exact_sender_question_and_does_not_fetch_or_persist_body():
     flow, client, result = offer()
-    assert result["text"] == "You have a new email from Alice Smith, would you like me to read it for you, sir?"
+    assert result["text"] == "You have a new email from Alice Smith, would you like me to read it?"
     assert client.calls == []
     assert "body" not in result["email_offer"] and "snippet" not in result["email_offer"]
     assert "Private email" not in str(flow.export_state())

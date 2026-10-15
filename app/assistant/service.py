@@ -4,6 +4,7 @@ import queue
 import threading
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from app.assistant.engine import Engine
 from app.assistant.transactions import History
@@ -17,6 +18,7 @@ from app.assistant.conversation import social_request, social_answer
 from app.assistant.model_fallback import ModelToolError, ToolFallback
 from app.assistant.progress import acknowledgement
 from app.assistant.email_tasks import respond as email_task
+from app.assistant.inference import DeadlineClient
 
 
 class AssistantService:
@@ -79,12 +81,16 @@ class AssistantService:
         acknowledged = False
 
         def emit(**event):
-            with progress_lock:
-                if event.get('type') in {'answer', 'error'}:
+            if event.get('type') in {'answer', 'error'}:
+                with progress_lock:
                     finished.set()
+                release = getattr(self.tool_fallback, 'release', None)
+                if release:
+                    release()
+            with progress_lock:
                 self.events.put(event)
 
-        def acknowledge(text='Give me a sec.', *, again=False):
+        def acknowledge(text="I'm working through that now.", *, again=False):
             nonlocal acknowledged
             with progress_lock:
                 if finished.is_set() or self.cancel.is_set() or acknowledged and not again:
@@ -94,13 +100,15 @@ class AssistantService:
 
         def work():
             started = time.monotonic()
-            delayed = threading.Timer(2.0, acknowledge)
+            delayed = threading.Timer(7.0, acknowledge)
             delayed.daemon = True
             initial = acknowledgement(request)
             if initial:
                 acknowledge(initial)
             delayed.start()
             try:
+                request_runtime = SimpleNamespace(ensure=getattr(self.runtime, 'ensure', lambda: None), settings=getattr(self.runtime, 'settings', {}),
+                    client=DeadlineClient(getattr(self.runtime, 'client', None), self.cancel))
                 direct = email_task(request, conversation, self.vault, self.calendar, self.history, self.cancel, self.zone)
                 if direct is not None:
                     emit(type='answer', **direct)
@@ -110,7 +118,7 @@ class AssistantService:
                     emit(type='answer', **direct)
                     return
                 if self.mail_flow is not None and link_request(request):
-                    linked = self.mail_flow.respond(request, conversation, self.cancel, emit)
+                    linked = self.mail_flow.respond(request, conversation, self.cancel, emit, runtime=request_runtime)
                     if linked is not None:
                         emit(type='answer', **linked)
                         return
@@ -128,7 +136,7 @@ class AssistantService:
                         emit(type="answer", **email)
                         return
                 if self.mail_flow is not None:
-                    email = self.mail_flow.respond(request, conversation, self.cancel, emit)
+                    email = self.mail_flow.respond(request, conversation, self.cancel, emit, runtime=request_runtime)
                     if email is not None:
                         emit(type='answer', **email)
                         return
@@ -139,21 +147,21 @@ class AssistantService:
                 emit(type="status", message="Connecting to your local model")
                 self.runtime.ensure()
                 if social_request(request):
-                    social = social_answer(request, conversation, self.runtime.client)
+                    social = social_answer(request, conversation, request_runtime.client)
                     if social is not None:
                         emit(type='answer', **social)
                         return
-                engine = Engine(self.vault, self.calendar, self.history, self.runtime.client,
+                engine = Engine(self.vault, self.calendar, self.history, request_runtime.client,
                                 self.runtime.settings, self.zone, external=self.external)
                 try:
                     result = engine.run(request, conversation, emit, self.cancel)
                 except ModelToolError:
                     if self.cancel.is_set():
                         raise ValueError('Request cancelled. Nothing was saved.')
-                    acknowledge("Give me a sec. I'll try that another way.", again=True)
+                    acknowledge("This needs another approach. I'm trying the other local model.", again=True)
                     emit(type='status', message='Retrying with another installed local model')
                     fallback = self.tool_fallback.ensure(self.cancel)
-                    engine = Engine(self.vault, self.calendar, self.history, fallback.client,
+                    engine = Engine(self.vault, self.calendar, self.history, DeadlineClient(fallback.client, self.cancel),
                                     fallback.settings, self.zone, external=self.external)
                     try:
                         result = engine.run(request, conversation, emit, self.cancel)

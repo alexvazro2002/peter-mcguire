@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.assistant.conversation import conversation_messages, spoken_answer
+from app.assistant.conversation import conversation_messages, polished_reply, social_answer, spoken_answer
 from app.assistant.engine import Engine, input_budget, prompt_bytes
 from app.assistant.grounding import unsupported_reply
 from app.assistant.transactions import History
@@ -154,6 +154,28 @@ def test_invented_subject_is_rejected_even_when_a_different_real_email_was_found
 def test_spoken_answers_keep_words_without_markdown_or_reading_urls():
     text = '## Update\n- **One email** is ready.\n- [View it](https://mail.google.com/mail/#all/abc123).'
     assert spoken_answer(text) == 'One email is ready. View it.'
+
+
+def test_model_prose_omits_habitual_vocatives_but_keeps_titles_and_literal_quotes():
+    answer = 'Sir, the task is saved, sir. Sir David wrote “Thank you, sir.”'
+    assert polished_reply(answer) == 'The task is saved. Sir David wrote “Thank you, sir.”'
+    assert polished_reply('The address begins "Dear Sir," and ends "Yours faithfully".') == 'The address begins "Dear Sir," and ends "Yours faithfully".'
+
+
+def test_social_model_reply_does_not_echo_formal_habit_from_old_conversation():
+    old = [dict(role='user', text='Thanks, sir.'), dict(role='assistant', text='At your service, sir.')]
+    model = Model(dict(answer='Good evening, sir. How are things?', apply_changes=False))
+    answer = social_answer('Hello.', old, model)
+    assert answer['text'] == 'Good evening. How are things?'
+    history = conversation_messages(old, 3000)
+    assert history[0]['content'] == 'Thanks, sir.'
+    assert json.loads(history[1]['content'])['answer'] == 'At your service.'
+
+
+def test_literal_email_history_keeps_original_vocatives_and_punctuation():
+    history = conversation_messages([dict(role='user', text='Read it.'),
+                                    dict(role='assistant', text='Dear Sir, your room is ready, sir.', email_content=True)], 3000)
+    assert json.loads(history[1]['content'])['untrusted_email_excerpt'] == 'Dear Sir, your room is ready, sir.'
 
 
 def test_weather_followup_uses_public_city_supplied_by_user(monkeypatch):

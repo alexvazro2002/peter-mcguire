@@ -2,6 +2,7 @@
 import json
 from datetime import datetime
 from threading import Event
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -138,3 +139,70 @@ def test_remind_me_compound_request_is_not_partially_executed(workspace):
     result = respond("Remind me to reply to this email tomorrow at 8pm and add a note about the trip.",
                      conversation(), *workspace, now=NOW)
     assert result is None and not workspace[1].entries() and not workspace[2].recent()
+
+
+@pytest.mark.parametrize("utterance", [
+    "And Peter, can you add a task to reply to this email for today at 9.13 pm?",
+    "And, Peter, can you add a task to reply to this email for today at 9.13 p.m.?",
+    "Well Peter, could you make a task for today at 9:13pm to reply to that email?",
+    "Oh, Peter, please remind me to reply to this email today at 9 13 pm.",
+    "Actually, can you add a task for today at 9 13 p.m. to reply to this email with a link?",
+    "And can you create a task today at 9.13pm to reply to this message?",
+    "And Peter, create a task to reply to this email today at 21:13.",
+])
+def test_conversational_prefixes_and_dictated_minute_separators_save_exact_time(utterance, workspace):
+    result = respond(utterance, conversation(), *workspace, now=NOW)
+    assert result is not None and result["operation_id"]
+    task, = workspace[1].entries()
+    assert task["date"] == "2026-10-15" and task["time"] == "21:13"
+    assert task["title"] == "Reply to email: Trip planning" and SOURCE["url"] in task["details"]
+    assert "sir" not in result["text"].casefold()
+
+
+def test_exact_stalled_request_resolves_current_read_and_retry_does_not_duplicate(workspace):
+    older = dict(SOURCE, id="old", url=SOURCE["url"].replace("actual-message", "old"), title="Older subject")
+    rows = conversation(SOURCE, older) + [dict(role="user", text="Read the latest one."),
+                                        dict(role="assistant", text="Actual current message.", sources=[SOURCE])]
+    utterance = "And Peter, can you add a task to reply to this email for today at 9.13 pm?"
+    result = respond(utterance, rows, *workspace, now=NOW)
+    retry = respond(utterance, rows, *workspace, now=NOW)
+    assert result["operation_id"] and result["evidence"]["email_id"] == SOURCE["id"]
+    assert retry["operation_id"] is None and not retry["changes"]
+    assert len(workspace[1].entries()) == 1 and len(workspace[2].recent()) == 1
+    task, = workspace[1].entries()
+    assert task["time"] == "21:13" and SOURCE["url"] in task["details"]
+
+
+@pytest.mark.parametrize("time", ["9.130pm", "9.13.30pm", "9 3 pm", "9.13", "9.73pm", "9:13:00pm", "9.13pm and 10.13pm"])
+def test_ambiguous_or_invalid_dot_times_never_match_a_trailing_number(time, workspace):
+    assert respond(f"And Peter, create a task today at {time} to reply to this email.", conversation(), *workspace, now=NOW) is None
+    assert not workspace[1].entries() and not workspace[2].recent()
+
+
+def test_conversational_prefix_does_not_discard_other_work_or_reuse_an_unrelated_email(workspace):
+    utterance = "And Peter, create a task today at 9.13pm to reply to this email and create a note called Trip."
+    assert respond(utterance, conversation(), *workspace, now=NOW) is None
+    unrelated = conversation() + [dict(role="user", text="Show my tasks for today."),
+                                  dict(role="assistant", text="Here are your tasks.")]
+    result = respond("And Peter, can you add a task to reply to this email for today at 9.13 pm?", unrelated, *workspace, now=NOW)
+    assert result["evidence"]["needs_email_reference"] and not workspace[1].entries()
+
+
+def test_service_executes_the_exact_stalled_request_before_email_review_or_model_work(workspace, tmp_path, monkeypatch):
+    from app.assistant.service import AssistantService
+    from app.integrations import ExternalAccess
+    monkeypatch.setattr("app.assistant.email_tasks.local_now", lambda zone: NOW)
+    vault, calendar, _ = workspace
+    runtime = SimpleNamespace(settings={}, ensure=lambda: pytest.fail("A linked reply task needs no model"))
+    service = AssistantService(vault, calendar, runtime, tmp_path / "conversation.json",
+                               external=ExternalAccess(gmail=SimpleNamespace()))
+    service.messages = conversation()
+    monkeypatch.setattr(service.mail_flow, "respond", lambda *args, **kwargs: pytest.fail("Do not turn a task request into email Q&A"))
+    service.send("And Peter, can you add a task to reply to this email for today at 9.13 pm?")
+    while True:
+        event = service.events.get(timeout=2)
+        if event["type"] in {"answer", "error"}:
+            break
+    assert event["type"] == "answer" and event["operation_id"]
+    task, = calendar.entries()
+    assert task["date"] == "2026-10-15" and task["time"] == "21:13" and SOURCE["url"] in task["details"]

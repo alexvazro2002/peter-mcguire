@@ -26,7 +26,11 @@ _HEAD = re.compile(
 _REPLY = re.compile(r"\b(?:to\s+)?(?:reply|respond)\s+to\s+(?:(?:this|that|the)\s+)?(?:email|message)\b", re.I)
 _DATE = re.compile(r"\b(?:today|tomorrow|yesterday|(?:(?:this|next|last|upcoming)\s+)?(?:"
                    + "|".join(WEEKDAYS) + r")|\d{4}-\d{2}-\d{2})\b", re.I)
-_TIME = re.compile(r"(?<![\w:])(?:u\s*)?(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b|(?<![\w:])(\d{1,2}):(\d{2})(?![\w:])", re.I)
+_TIME = re.compile(
+    r"(?<![\w:.])(?:u\s*)?(?P<hour12>\d{1,2})(?:(?::|\.|\s+)(?P<minute12>\d{2}))?"
+    r"\s*(?P<meridiem>[ap]\.?m\.?)(?!\w)|"
+    r"(?<![\w:.])(?P<hour24>\d{1,2}):(?P<minute24>\d{2})(?![\w:]|\.\d)", re.I,
+)
 _LINK = re.compile(
     r"\b(?:(?:and|with)\s+)?(?:also\s+)?(?:(?:add|include|attach|put|save)\s+)?"
     r"(?:(?:a|the|its)\s+)?(?:(?:direct|gmail|email)\s+)?link"
@@ -34,6 +38,13 @@ _LINK = re.compile(
     r"(?:\s+in\s+(?:(?:this|that|the)\s+)?(?:task|reminder))?\b", re.I,
 )
 _NEGATED = re.compile(r"\b(?:never|don'?t|do\s+not|shouldn'?t|wouldn'?t|can'?t|unless|except|instead)\b", re.I)
+_LEAD_IN = re.compile(r"^\s*(?:and|also|then|now|well|oh|actually)\b[\s,.:]+", re.I)
+
+
+def _command_text(request):
+    # Conversational lead-ins precede Peter's name in ordinary speech. Remove
+    # filler only at the start; never discard a previous instruction or clause.
+    return request_text(_LEAD_IN.sub("", request, count=1))
 
 
 def _cancelled(cancel):
@@ -45,7 +56,7 @@ def plan(request, zone="Europe/London", now=None):
     """Return a fully understood date/time plan, or None without executing it."""
     if not isinstance(request, str):
         return None
-    text = request_text(request)
+    text = _command_text(request)
     if _NEGATED.search(text):
         return None
     head = _HEAD.match(text)
@@ -58,13 +69,13 @@ def plan(request, zone="Europe/London", now=None):
     if len(replies) != 1 or len(dates) != 1 or len(times) != 1:
         return None
     clock = times[0]
-    if clock[1]:
-        hour, minute = int(clock[1]), int(clock[2] or 0)
+    if clock["hour12"]:
+        hour, minute = int(clock["hour12"]), int(clock["minute12"] or 0)
         if not 1 <= hour <= 12 or minute > 59:
             return None
-        hour = hour % 12 + (12 if clock[3].lower().startswith("p") else 0)
+        hour = hour % 12 + (12 if clock["meridiem"].lower().startswith("p") else 0)
     else:
-        hour, minute = int(clock[4]), int(clock[5])
+        hour, minute = int(clock["hour24"]), int(clock["minute24"])
         if hour > 23 or minute > 59:
             return None
     # Remove only recognised clauses. Anything else is work we must not drop.
@@ -95,7 +106,7 @@ def respond(request, conversation, vault, calendar, history, cancel=None,
     _cancelled(cancel)
     ref = select_reference(request, conversation)
     if ref is None:
-        return dict(text="Which email should I link to that reply task, sir?",
+        return dict(text="Which email should I link to that reply task?",
                     sources=[], changes=[], operation_id=None,
                     evidence=dict(workspace_action="email_reply_task", verified=False,
                                   needs_email_reference=True))
@@ -114,7 +125,7 @@ def respond(request, conversation, vault, calendar, history, cancel=None,
     source = dict(kind="email", id=ref["id"], account=ref["account"],
                   url=ref["url"], title=subject)
     verb = "I've scheduled" if created["changed"] else "You already have"
-    text = f"{verb} a task to reply to “{subject}” for {schedule['date']} at {schedule['time']}, with the Gmail link, sir."
+    text = f"{verb} a task to reply to “{subject}” for {schedule['date']} at {schedule['time']}, with the Gmail link."
     return dict(text=text, sources=[source, *tx.sources], changes=list(tx.summaries),
                 operation_id=operation_id,
                 evidence=dict(tools=["create_task"], workspace_action="email_reply_task",

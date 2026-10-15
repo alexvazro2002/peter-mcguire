@@ -91,6 +91,10 @@ class Workspace:
         page.window.width = self.cfg.get("window_width", 1440)
         page.window.height = self.cfg.get("window_height", 900)
         page.window.min_width, page.window.min_height = 1000, 680
+        if not embedded and not getattr(page, 'web', False):
+            page.window.full_screen = False
+            page.window.frameless = False
+            page.window.maximized = True
         page.window.prevent_close = True
         page.window.on_event = self.window_event
         page.on_keyboard_event, page.on_disconnect = self.keyboard, self.disconnect
@@ -662,7 +666,7 @@ class Workspace:
                                 waiting = [row for row in self.email_briefing.export_state()['pending']
                                            if row['account'] == batch['account']]
                                 if len(waiting) > batch.get('count', len(batch['messages'])):
-                                    event['text'] = message['text'] = (f"I checked your inbox, sir. You have {len(waiting)} "
+                                    event['text'] = message['text'] = (f"I checked your inbox. You have {len(waiting)} "
                                         f"email{'s' if len(waiting) != 1 else ''} waiting for your review."
                                         + (' ' + event['gmail_latest_text'] if event.get('gmail_latest_text') else ''))
                             except (OSError, ValueError, GmailError) as error:

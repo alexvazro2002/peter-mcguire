@@ -53,6 +53,8 @@ class PageDouble:
 def test_all_views_and_tools_construct(dark, width, height):
     with patch.object(ft.Control, "update", lambda self: None):
         app = Workspace(PageDouble(width, height))
+        assert app.page.window.maximized is True
+        assert app.page.window.full_screen is False and app.page.window.frameless is False
         app.cfg["theme_dark"] = dark
         for view in ("home", "tools", "library", "settings", "tasks", "assistant", "memory", "notes"):
             app.navigate(view)
@@ -353,7 +355,7 @@ def test_startup_preloads_shared_model_once_and_greets_through_voice(peter_ui, m
     asyncio.run(app.start_peter())
     assert calls == ["shared model"] and app.voice.startups == 1
     assert app.assistant_model_selected
-    assert app.voice.greeting.endswith(", sir. Ready for today?")
+    assert app.voice.greeting.endswith(". Shall we see what today has in store?")
     assert app.assistant.messages[-1]["text"] == app.voice.greeting
     assert app.assistant.briefing.awaiting_ready
 
@@ -402,7 +404,7 @@ def test_email_offer_waits_for_calendar_speech_then_preserves_exact_prompt(peter
     assert app.email_prompt_pending and app.email_briefing.awaiting is None
     app.voice.state = 'idle'
     one_poll(app, monkeypatch)
-    prompt = 'You have a new email from Ada Example, would you like me to read it for you, sir?'
+    prompt = 'You have a new email from Ada Example, would you like me to read it?'
     assert app.voice.spoken[-1] == prompt
     assert app.assistant.messages[-1]['text'] == prompt
     assert app.assistant.messages[-1]['email_offer']['id'] == 'a1'
@@ -442,7 +444,7 @@ def test_manual_inbox_check_reports_mail_already_queued_by_startup(peter_ui, mon
     app.assistant.events.put(dict(type='answer', text='No new emails since the last check.',
         sources=[], changes=[], operation_id=None, gmail_check_batch=batch))
     one_poll(app, monkeypatch)
-    assert app.assistant.messages[0]['text'] == 'I checked your inbox, sir. You have 1 email waiting for your review.'
+    assert app.assistant.messages[0]['text'] == 'I checked your inbox. You have 1 email waiting for your review.'
 
 
 def test_email_reading_flags_remain_in_saved_history(peter_ui, monkeypatch):

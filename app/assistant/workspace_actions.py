@@ -93,7 +93,7 @@ def respond(request, conversation, vault, calendar, history, cancel=None):
                     deleted_task_ids=[item["id"] for item in deleted],
                     selection=dict(kind="task", date=None))
     if not count:
-        return dict(text="You have no unscheduled tasks to delete, sir.",
+        return dict(text="You have no unscheduled tasks to delete.",
                     changes=[], operation_id=None, sources=[], evidence=evidence)
     tx.calendar_data["entries"] = [item for item in tx.calendar_data["entries"]
                                    if item["id"] not in deleted_ids]
@@ -103,6 +103,6 @@ def respond(request, conversation, vault, calendar, history, cancel=None):
     operation_id = tx.commit(request)
     # History.commit checks the written bytes against the complete after-image.
     # Report only that verified operation, never a model-generated promise.
-    return dict(text=f"Deleted {count} unscheduled {'task' if count == 1 else 'tasks'}, sir. You can undo this.",
+    return dict(text=f"Deleted {count} unscheduled {'task' if count == 1 else 'tasks'}. You can undo this.",
                 changes=list(tx.summaries), operation_id=operation_id,
                 sources=[], evidence=evidence)

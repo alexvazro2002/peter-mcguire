@@ -24,10 +24,18 @@ class ChatClient:
         self.last_usage = {}
         self.last_timings = {}
 
-    def complete(self, messages, *, structured=False, max_tokens=None, response_schema=None):
+    def complete(self, messages, *, structured=False, max_tokens=None, response_schema=None, deadline=None, cancel=None):
         import requests
         started = time.monotonic()
         requests_used = 0
+        def remaining_budget():
+            if cancel is not None and cancel.is_set():
+                raise ValueError('Request cancelled.')
+            remaining = deadline - time.monotonic() if deadline is not None else 240
+            if remaining <= 0:
+                raise TimeoutError('The local model request exceeded its time budget.')
+            return remaining
+        remaining_budget()
         validate_url(self.settings["server_url"])
         payload = {"messages": messages, "temperature": 0.1 if structured else 0.15,
                    "max_tokens": int(max_tokens if max_tokens is not None else self.settings.get("max_tokens", 1800))}
@@ -43,7 +51,7 @@ class ChatClient:
         elif self.settings.get("runtime_provider") == "lmstudio":
             # Library workers share the server in another process; resolve its exact alias too.
             from library.models import model_matches
-            models = requests.get(self.settings["server_url"].rstrip("/") + "/models", timeout=5, allow_redirects=False, **request_options(self.settings))
+            models = requests.get(self.settings["server_url"].rstrip("/") + "/models", timeout=min(5, remaining_budget()), allow_redirects=False, **request_options(self.settings))
             check_auth(models)
             models.raise_for_status()
             identifiers = [item.get("id", "") for item in models.json().get("data", [])]
@@ -65,8 +73,9 @@ class ChatClient:
         url = self.settings["server_url"].rstrip("/") + "/chat/completions"
         def post():
             nonlocal requests_used
+            remaining = remaining_budget()
             requests_used += 1
-            return requests.post(url, json=payload, timeout=(5, 240), allow_redirects=False, **request_options(self.settings))
+            return requests.post(url, json=payload, timeout=(min(5, remaining), min(30, remaining) if deadline is not None else 240), allow_redirects=False, **request_options(self.settings))
 
         def rejection(response):
             if getattr(response, "status_code", 200) not in {400, 422}:

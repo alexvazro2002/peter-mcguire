@@ -60,6 +60,11 @@ def test_participant_does_not_match_body_or_to_or_one_shared_name():
                                                body='Jose Angel', cc='')) is None
 
 
+def test_fuzzy_display_name_works_when_job_title_and_surname_follow_it():
+    assert participant_match('Josie Angel',dict(sender='"José Ángel Vazquez. Director H10 Palace" <office@example.test>',cc=''))
+    assert participant_match('Jose Angel',dict(sender='"Josie Smith. Hotel Manager" <office@example.test>',cc='')) is None
+
+
 def test_prepare_enumerates_complete_window_then_locally_matches_from_or_cc(tmp_path):
     gmail = Gmail([email(), email('a2', sender='Else <else@example.test>', cc='JoseAngel <ja@example.test>'),
                    email('a3', sender='Different Person <different@example.test>')])

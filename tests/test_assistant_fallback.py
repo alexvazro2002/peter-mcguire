@@ -97,7 +97,7 @@ def test_service_replays_full_request_and_conversation_after_primary_only_promis
     assert len(service.history.recent()) == 1
     assert answer["evidence"]["model_fallback"] == "Installed instruction model"
     assert [e["type"] for e in events].count("answer") == 1
-    assert any(e["type"] == "acknowledgement" and "another way" in e["text"] for e in events)
+    assert any(e["type"] == "acknowledgement" and "another approach" in e["text"] for e in events)
     # Progress speech is not a completed assistant turn or persisted user data.
     persisted = json.loads(service.path.read_text())
     assert persisted == service.messages and len(persisted) == 3
@@ -147,20 +147,20 @@ def test_cancellation_on_protocol_failure_prevents_fallback_and_writes(tmp_path)
     assert not any("another way" in e.get("text", "") for e in events)
 
 
-def test_write_acknowledgement_is_queued_before_model_work_and_does_not_end_busy_state(tmp_path):
+def test_small_write_skips_spoken_preamble_and_keeps_busy_state_until_completed(tmp_path):
     service = service_for(tmp_path, Model(task_reply(), dict(answer="Done.", apply_changes=True)))
     service.events = RecordingQueue()
     seen = []
     def connecting():
         queued = service.events.recorded
-        assert queued[0] == dict(type="acknowledgement", text="Give me a sec.")
+        assert not any(e['type']=='acknowledgement' for e in queued)
         assert service.busy and len(service.messages) == 1 and service.messages[0]["role"] == "user"
         seen.append("connecting")
     service.runtime.ensure = connecting
     service.send(REQUEST)
     result, events = terminal(service)
     assert result["type"] == "answer" and seen == ["connecting"]
-    assert events[0]["type"] == "acknowledgement"
+    assert not any(e['type']=='acknowledgement' for e in events)
 
 
 def test_large_email_review_acknowledges_before_fetch_and_report_preparation(tmp_path, monkeypatch):
@@ -170,7 +170,7 @@ def test_large_email_review_acknowledges_before_fetch_and_report_preparation(tmp
     preparations = []
     def prepare(*args, **kwargs):
         queued = service.events.recorded
-        assert queued[0]["type"] == "acknowledgement" and "minute" in queued[0]["text"]
+        assert queued[0]["type"] == "acknowledgement" and "moment" in queued[0]["text"]
         assert service.busy and [r["role"] for r in service.messages] == ["user"]
         preparations.append(True)
         return original(*args, **kwargs)

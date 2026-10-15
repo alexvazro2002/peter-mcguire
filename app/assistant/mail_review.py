@@ -52,6 +52,15 @@ def participant_match(participant, message):
             values = [values]
         for name, address in getaddresses([str(v) for v in values if v]):
             candidates = [_normal(address)] if is_address else [_normal(name), _normal(address.split('@')[0])]
+            if not is_address and len(requested) >= 6:
+                # Job titles and surnames must not drown out a close two-name
+                # dictation match such as Josie Angel / José Ángel Vazquez.
+                words = re.findall(r'[^\W_]+', name, re.UNICODE)
+                for start in range(len(words)):
+                    for count in range(1, min(4, len(words)-start)+1):
+                        candidate = _normal(''.join(words[start:start+count]))
+                        if .75*len(requested) <= len(candidate) <= 1.3*len(requested):
+                            candidates.append(candidate)
             for candidate in candidates:
                 if not candidate:
                     continue

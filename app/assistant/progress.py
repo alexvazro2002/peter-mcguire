@@ -15,7 +15,5 @@ def acknowledgement(request):
         return None
     if (re.search(r'\b(?:emails?|gmail|inbox)\b', request, re.I)
             and re.search(r'\b(?:past|last)\s+(?:\d+|one|two|three|four|six|twelve)\s+(?:weeks?|months?|years?)\b', request, re.I)):
-        return 'Give me a minute to check those emails.'
-    if workspace_write_request(request):
-        return 'Give me a sec.'
+        return "I'll go through those emails carefully. This may take a moment."
     return None

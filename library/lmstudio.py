@@ -1,4 +1,4 @@
-"""Use installed LM Studio and existing local weights; never download or unload models."""
+"""Use existing local weights; track Peter's loads so temporary retries can release them."""
 from __future__ import annotations
 
 import json
@@ -122,6 +122,8 @@ class LMStudio:
                 raise ValueError("LM Studio returned an invalid model key.")
             self.settings["lmstudio_model_key"] = selected.get("selectedVariant") or key
             alias = "peter-" + self.settings.get("model_id", "local")
+            if any(model.get('identifier') == alias for model in loaded):
+                raise ValueError('The Peter model alias is already used by another loaded model.')
             args = ["load", key, "--identifier", alias, "--context-length",
                     str(int(self.settings.get("context_size", 8192))), "--yes"]
             # LM Studio's automatic placement is the default. Respect explicit full/CPU offload.
@@ -134,6 +136,7 @@ class LMStudio:
             else:
                 args += ["--gpu", "max" if layers == -1 else "off"] if layers in {0, -1} else []
             self.log("Loading your existing " + str(selected.get("displayName") or key) + " in LM Studio…")
+            self.settings['_peter_loaded_alias'] = alias
             self.run(args, deadline, cancel)
             loaded = parse_models(self.run(["ps", "--json"], deadline, cancel))
             selected = next((m for m in loaded if matches(m, self.settings)), None)

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import re
 from urllib.parse import urlsplit
-from app.assistant.conversation import spoken_answer
+from app.assistant.conversation import polished_reply, spoken_answer
 from app.assistant.personal_grounding import TRUTH_RULES, personal_problem, personal_fallback
 
 FINAL_SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}, "apply_changes": {"type": "boolean"}},
@@ -12,10 +12,11 @@ FINAL_SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}, "
 INSTRUCTIONS = """An email does not establish personal facts about the user. Never claim to have
 their CV, degree, experience or qualifications without their explicit statements. Job requirements
 are not their biography. If personal evidence is absent, say so and ask for it.
-You are Peter McGuire, a warm, candid British personal assistant. Everything
-you say is spoken aloud: use contractions and plain conversational sentences, without headings,
-bullets, raw URLs or internal IDs. Use 'sir' occasionally. Usually answer in two to four short
-sentences; give detail when asked, without a reflexive follow-up question.
+You are Peter McGuire, a professionally warm British butler with occasional unforced dry wit.
+Don't routinely use 'sir'. Speak in plain sentences with contractions, without headings, bullets,
+raw URLs or internal IDs. Usually answer in two to four short sentences; give detail when asked.
+Use the user's language for summaries, including English summaries of Spanish emails.
+Keep the original language for requested literal readings. Don't end every reply with a question.
 For factual questions or 'tell me more', stick to what the email actually states. Don't add
 unsolicited advice, infer the job's seniority or compare salaries. Only assess the offer when
 the user asks what you think; distinguish your judgment from the message's stated facts.
@@ -85,7 +86,7 @@ def read_selected_email(access, request, client, settings, cancel, emit, *, conv
     email = access.read_gmail(limit=16000)
     source = dict(kind='email', url=email['url'], title=email['subject'], id=email['id'], account=email['account'], email_read=True)
     if not email['text'].strip():
-        return dict(text='This email has no readable text body, sir. Open it to view any attachments.', changes=[],
+        return dict(text='This email has no readable text body. Open it to view any attachments.', changes=[],
                     operation_id=None, email_content=True, untrusted=True, sources=[source])
     email['text'], email['links_shortened_for_reading'] = reading_text(email['text'])
     system = {"role": "system", "content": INSTRUCTIONS}
@@ -124,5 +125,5 @@ def read_selected_email(access, request, client, settings, cancel, emit, *, conv
     answer = _complete(client, messages, cancel, request=request, conversation=conversation)
     if email['body_limit_reached']:
         answer += ' The message exceeded the reading limit; open the email for the remainder.'
-    return dict(text=spoken_answer(answer), changes=[], operation_id=None, email_content=True, untrusted=True,
+    return dict(text=spoken_answer(polished_reply(answer)), changes=[], operation_id=None, email_content=True, untrusted=True,
                 sources=[source], evidence=dict(tools=['read_gmail']))

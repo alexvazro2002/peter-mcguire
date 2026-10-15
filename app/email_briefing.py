@@ -126,7 +126,7 @@ class EmailBriefing:
             self.awaiting = dict(entry)
             return _answer(
                 f"You have a new email from {sender_name(self.awaiting['sender'])}, "
-                "would you like me to read it for you, sir?",
+                "would you like me to read it?",
                 email_offer=dict(self.awaiting), untrusted=True)
 
     def expire(self):
@@ -167,7 +167,7 @@ class EmailBriefing:
                 return None
             _check(cancel)
             if choice == "skip":
-                return _answer("Very well, sir. I shall leave that email for now.",
+                return _answer("Of course. I'll leave that email for now.",
                                email_handled=self._handled(), email_briefing_next=True)
             entry = dict(self.awaiting)
             generation = self._offer_generation

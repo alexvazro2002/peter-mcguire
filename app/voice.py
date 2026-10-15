@@ -363,7 +363,7 @@ class VoiceController:
             self._sentence_pipeline(text, directory, produce, player, cancelled, finished=finished, captions=captions)
 
     def _speak_british(self, text, player, cancelled, *, captions=True):
-        """Use native English/Spanish stock voices while retaining the written captions."""
+        """Keep Peter's speaker identity while selecting English or Spanish pronunciation."""
         runtime = Path(self.settings.get("voice_runtime") or BASE_DIR / ".runtime" / "VoiceStudio").expanduser()
         python = runtime / ".venv" / "bin" / "python"
         models = Path(self.settings.get("british_voice_path") or DATA_DIR / ".runtime" / "british-voice").expanduser()
@@ -389,7 +389,7 @@ class VoiceController:
                     if not any(character.isalnum() for character in rendered):
                         rendered = ''
                     if language == 'es':
-                        spoken.append(dict(text=rendered, language='es', voice='em_alex'))
+                        spoken.append(dict(text=rendered, language='es', voice=english_voice))
                     else:
                         spoken.append(rendered)
                 content.write_text(json.dumps(spoken, ensure_ascii=False), encoding='utf-8')

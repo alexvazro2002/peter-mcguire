@@ -9,7 +9,7 @@ from collections import Counter
 from app.assistant.dates import local_now
 from app.assistant.tools import Tools
 from app.assistant.transactions import Transaction
-from app.assistant.conversation import SPOKEN_STYLE, conversation_messages, reference_context, spoken_answer
+from app.assistant.conversation import SPOKEN_STYLE, conversation_messages, reference_context, spoken_answer, polished_reply
 from app.assistant.grounding import unsupported_reply
 from app.assistant.mail_search import email_search_plan
 from app.assistant.action_grounding import action_problem
@@ -221,7 +221,7 @@ class Engine:
         if self.external is not None and re.match(r"\s*(?:(?:please|can you|could you|would you)\s+)*(?:send|reply|forward|draft|delete|archive|mark (?:as )?read|change labels)\b", request, re.I) and (
                 re.search(r"\b(?:e-?mail|gmail|inbox)\b", request, re.I) or re.search(r"\b(?:reply|forward)\b", request, re.I) and any(
                     source.get("kind") == "email" for item in conversation[-2:] for source in item.get("sources", []))):
-            return dict(text="Gmail is read-only, sir. I can read and assess your emails, but I cannot send, draft or change them.", changes=[], operation_id=None, sources=[])
+            return dict(text="Gmail is read-only. I can read and assess your emails, but I cannot send, draft or change them.", changes=[], operation_id=None, sources=[])
         if self.external is not None:
             from app.assistant.mail_subjects import subject_answer
             subjects = subject_answer(request, conversation, self.external.gmail, self.zone, cancel=cancel, now=self.now)
@@ -421,7 +421,7 @@ class Engine:
                 evidence = dict(tools=list(dict.fromkeys(row['tool'] for row in verified_results)),
                                 email_searches=[{k: row['result'][k] for k in ('query', 'scope', 'total', 'applied_local_range') if k in row['result']}
                                                 for row in verified_results if row['tool'] in {'search_gmail', 'latest_gmail'}][-3:])
-                return dict(text=spoken_answer(answer), changes=changes, operation_id=operation_id, sources=tx.sources[:20], evidence=evidence)
+                return dict(text=spoken_answer(polished_reply(answer)), changes=changes, operation_id=operation_id, sources=tx.sources[:20], evidence=evidence)
             calls_used += len(calls)
             output_tokens = tool_output_tokens
             if calls_used > 64:

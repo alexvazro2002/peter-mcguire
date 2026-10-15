@@ -53,7 +53,7 @@ def load_text(path):
     return text
 
 
-def validate_request(model_dir, voice, speed):
+def validate_request(model_dir, voice, speed, *, language=None):
     if voice not in ALL_VOICE_IDS:
         raise BritishVoiceError("Choose a supported English or Spanish stock voice.")
     if not math.isfinite(speed) or not 0.7 <= speed <= 1.4:
@@ -61,7 +61,10 @@ def validate_request(model_dir, voice, speed):
     model_dir = Path(model_dir).expanduser().resolve()
     if any(not (model_dir / name).is_file() for name in REQUIRED_FILES):
         raise BritishVoiceError("British voice files are incomplete. Run the explicit British voice installer first.")
-    if voice in SPANISH_VOICE_IDS and any(not (model_dir / name).is_file() for name in SPANISH_FILES):
+    language = language or ('es' if voice in SPANISH_VOICE_IDS else 'en')
+    if language not in {'en', 'es'}:
+        raise BritishVoiceError("Choose English or Spanish speech.")
+    if language == 'es' and any(not (model_dir / name).is_file() for name in SPANISH_FILES):
         raise BritishVoiceError("Spanish phonemizer files are incomplete. Run the voice installer first.")
     return model_dir
 
@@ -112,15 +115,15 @@ def write_wav(output, samples, sample_rate):
         Path(temporary).unlink(missing_ok=True)
 
 
-def synthesize(model_dir, text, output, *, speed=1.0, voice="bm_george", engine_factory=create_engine):
-    model_dir = validate_request(model_dir, voice, speed)
-    language = 'es' if voice in SPANISH_VOICE_IDS else 'en'
+def synthesize(model_dir, text, output, *, speed=1.0, voice="bm_george", language=None, engine_factory=create_engine):
+    language = language or ('es' if voice in SPANISH_VOICE_IDS else 'en')
+    model_dir = validate_request(model_dir, voice, speed, language=language)
     started = time.monotonic()
     engine = _load_engine(engine_factory, model_dir, language)
     loaded = time.monotonic()
     try:
-        # Explicit British G2P and a genuine British stock speaker. No speaker
-        # prompt, actor recording, remote service or fallback voice is involved.
+        # Language chooses pronunciation; sid independently chooses the speaker
+        # embedding, so Spanish can retain Peter's English vocal identity.
         result = engine.generate(text, sid=ALL_VOICE_IDS[voice], speed=speed)
     except Exception as error:
         # Upstream exceptions can include the source utterance; keep the
@@ -136,10 +139,11 @@ def synthesize(model_dir, text, output, *, speed=1.0, voice="bm_george", engine_
                 real_time_factor=round((generated - loaded) / duration, 3))
 
 
-def synthesize_segments(model_dir, manifest, directory, *, speed=1.0, voice="bm_george",
+def synthesize_segments(model_dir, manifest, directory, *, speed=1.0, voice="bm_george", language=None,
                         engine_factory=create_engine, wait=time.sleep):
     """Load once, publish each atomic WAV, and stay at most three clips ahead."""
-    model_dir = validate_request(model_dir, voice, speed)
+    language = language or ('es' if voice in SPANISH_VOICE_IDS else 'en')
+    model_dir = validate_request(model_dir, voice, speed, language=language)
     manifest, directory = Path(manifest), Path(directory)
     if manifest.stat().st_size > 64000 or not directory.is_dir() or directory.is_symlink():
         raise BritishVoiceError("Invalid private sentence input or output directory.")
@@ -149,14 +153,13 @@ def synthesize_segments(model_dir, manifest, directory, *, speed=1.0, voice="bm_
     segments = []
     for item in inputs:
         if isinstance(item, str):
-            item = dict(text=item, language='es' if voice in SPANISH_VOICE_IDS else 'en', voice=voice)
+            item = dict(text=item, language=language, voice=voice)
         if (not isinstance(item, dict) or set(item) != {'text', 'language', 'voice'} or
                 not isinstance(item['text'], str) or (item['text'] and not item['text'].strip()) or len(item['text']) > 4096 or
                 not isinstance(item['language'], str) or item['language'] not in {'en', 'es'} or not isinstance(item['voice'], str) or
-                item['voice'] not in ALL_VOICE_IDS or
-                (item['voice'] in SPANISH_VOICE_IDS) != (item['language'] == 'es')):
+                item['voice'] not in ALL_VOICE_IDS):
             raise BritishVoiceError("Invalid or oversized sentence list.")
-        validate_request(model_dir, item['voice'], speed)
+        validate_request(model_dir, item['voice'], speed, language=item['language'])
         segments.append(item)
     if sum(len(item['text']) for item in segments) > 32000:
         raise BritishVoiceError("Invalid or oversized sentence list.")
@@ -196,17 +199,19 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--voice", choices=tuple(ALL_VOICE_IDS), default="bm_george")
+    parser.add_argument("--language", choices=('en', 'es'))
     args = parser.parse_args(argv)
     try:
         if args.segments_file:
             if args.output_dir is None or args.output is not None:
                 raise BritishVoiceError("Sentence synthesis requires its private output directory.")
-            synthesize_segments(args.model_dir, args.segments_file, args.output_dir, speed=args.speed, voice=args.voice)
+            synthesize_segments(args.model_dir, args.segments_file, args.output_dir, speed=args.speed, voice=args.voice,
+                                language=args.language)
             return 0
         if args.output is None:
             raise BritishVoiceError("Choose a temporary output WAV path.")
         metadata = synthesize(args.model_dir, load_text(args.text_file), args.output,
-                              speed=args.speed, voice=args.voice)
+                              speed=args.speed, voice=args.voice, language=args.language)
         print(json.dumps(metadata), flush=True)
         return 0
     except (BritishVoiceError, OSError, ValueError) as error:
