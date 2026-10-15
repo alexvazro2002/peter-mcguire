@@ -456,7 +456,12 @@ class Tools:
         changed = candidate != entry
         entry.update(candidate)
         if changed:
-            self.tx.changed(f"Updated {entry['kind']} '{entry['title']}'.")
+            summary = f"Updated {entry['kind']} '{entry['title']}'"
+            if 'date' in patch or 'time' in patch:
+                summary += ' for ' + (entry.get('date') or 'Unscheduled')
+                if entry.get('time'):
+                    summary += ' at ' + entry['time']
+            self.tx.changed(summary + '.')
         return dict(id=id, changed=changed)
 
     def edit_task(self, id, patch):

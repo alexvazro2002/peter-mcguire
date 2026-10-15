@@ -197,3 +197,36 @@ Calendar recurrence, timed notifications, attachment OCR and automatic bulk
 classification of old undated notes are not added by this feature.
 
 See `VALIDATION.md` for tests and the screenshots in `previews/assistant-*.png`.
+
+
+## Evidence and complete requests (October 2026)
+
+Peter's behaviour instructions live in `app/assistant/engine.py`,
+`conversation.py`, `personal_grounding.py` and the dedicated email reader.
+These are runtime instructions and checks; editing this document alone does not
+change his behaviour. Personal claims require explicit user statements or a read
+personal record. A previous assistant reply, filename, opened file or job advert
+is not evidence of the user's CV or qualifications. Unsupported claims are retried
+with a correction, then replaced with an honest explanation if still unverified.
+Old unsupported personal claims are omitted from model history, while the visible
+conversation remains intact for review. These checks reduce specific failure
+modes; free-form model output is not a guarantee of universal factual accuracy.
+
+A yes/yeah reply to a verified email reading offer fetches the real body before
+answering. CV questions end the email topic; job requirements do not establish the
+user's experience. Gmail permissions remain read-only.
+
+`completion.py` checks explicit named-note payloads and requested dated task slots
+before commit. An empty note, a missing observation/time, conflicting times or a
+missing task occurrence causes a correction; unresolved requests save nothing.
+Saved notes use readable Markdown even though spoken replies use plain sentences.
+Corrections about forgotten note text recover the earlier requested payload and
+edit the existing note rather than attempting to create it again.
+
+For the fully recognised combination of scheduling one uniquely identified
+unscheduled task at explicit weekday/time slots and creating a named timed journal
+note, the app builds the actions directly from live data. It preserves the original
+task ID/details, creates additional occurrences, and formats the observations with
+dates and times. Every clause must match and the existing task must be unambiguous;
+other requests use the model/tool loop with the same transaction checks. No partial
+parser executes extra clauses. All changes retain the existing journal and undo.

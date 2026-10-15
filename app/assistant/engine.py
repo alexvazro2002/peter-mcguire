@@ -12,8 +12,10 @@ from app.assistant.transactions import Transaction
 from app.assistant.conversation import SPOKEN_STYLE, conversation_messages, reference_context, spoken_answer
 from app.assistant.grounding import unsupported_reply
 from app.assistant.mail_search import email_search_plan
+from app.assistant.personal_grounding import TRUTH_RULES, personal_problem, personal_fallback
+from app.assistant.completion import completion_plan, completion_problem, completion_guidance, explicit_compound_actions
 
-INSTRUCTIONS = SPOKEN_STYLE + """
+INSTRUCTIONS = SPOKEN_STYLE + "\n" + TRUTH_RULES + """
 Answer ordinary conversation and
 stable general questions directly, without tools. Never expose reasoning. For current time use
 current_time; for live internet facts use search_web/read_web_page or current_weather. For email
@@ -57,7 +59,14 @@ window. If a sender search is empty, broaden the same search locally before givi
 never default to today or ask for a date the user told you to omit. For example, an unscheduled task:
 {"tool_calls":[{"name":"create_task","arguments":{"title":"Check workspace","date":"","time":""}}]}
 Preserve requested time and supporting checklists in details. Split
-multi-intent requests into all changes. Journal observations go in calendar day notes; future
+multi-intent requests into all changes. An explicit named note destination takes priority: put
+the entire requested content in that note, not just an empty title or a calendar entry. Use clear
+Markdown date headings and one bullet per observation with its time; correct obvious spelling
+without changing meaning. Spoken-answer formatting rules do not apply to saved note bodies.
+If the user says you forgot content, inspect the existing note and append the missing details,
+never recreate it or repeat already-completed scheduling. Schedule an existing unscheduled task
+by updating its ID; add only the additional requested occurrences. Journal observations without
+an explicit destination go in calendar day notes; future
 intentions are tasks. Completed activities use occurrence dates and activity metadata; repeated
 activities become distinct dated calendar events. Never invent old dates or use file modification
 times. Use transfer_list_item between lists and move_list_item within a list. For history/counts
@@ -218,14 +227,37 @@ class Engine:
         if access is not None and access.selected_email is not None and not re.search(
                 r"\b(?:and|then)\s+(?:(?:please|can you)\s+)?(?:create|add|save|remember|schedule|send|delete|update|search)\b", request, re.I):
             from app.assistant.email import read_selected_email
-            return read_selected_email(access, request, self.client, self.settings, cancel, emit)
+            return read_selected_email(access, getattr(access, "email_read_request", request), self.client, self.settings, cancel, emit, conversation=conversation)
         now = self.now or local_now(self.zone)
         tx = Transaction(self.vault, self.calendar, self.history)
         tools = Tools(tx, self.zone, now.date().isoformat(), page_items=4, page_chars=1200, external=access)
         catalogue = tools.overview(limit=6)
+        plan_changes = completion_plan(request, now, self.zone, conversation)
+        planned_actions = explicit_compound_actions(request, plan_changes, tx)
+        if planned_actions:
+            executed = []
+            for action in planned_actions:
+                if cancel.is_set():
+                    raise ValueError('Request cancelled. No changes were saved.')
+                result = tools.execute(action['name'], action['arguments'])
+                executed.append(dict(tool=action['name'], result=result))
+            incomplete = completion_problem(plan_changes, tx, executed)
+            if incomplete:
+                raise ValueError('No changes were saved. ' + incomplete)
+            if cancel.is_set():
+                raise ValueError('Request cancelled. No changes were saved.')
+            operation_id = tx.commit(request)
+            return dict(text='Done. ' + ' '.join(tx.summaries), changes=tx.summaries, operation_id=operation_id,
+                        sources=tx.sources, evidence=dict(tools=[row['tool'] for row in executed]))
         system = INSTRUCTIONS
+        if plan_changes["notes"] or plan_changes["slots"]:
+            system += "\nRequired outcomes from the user request (verify ALL before finishing; slots use local dates):\n" + json.dumps(completion_guidance(plan_changes, tx), ensure_ascii=False)
+        memories = []
         system += "\nAvailable tools (fetch exact argument schemas with describe_tools; $ref refers to $defs):\n"
         system += progressive_catalogue(tools)
+        if plan_changes['slots'] or plan_changes['notes']:
+            names = (['edit_task', 'create_task'] if plan_changes['slots'] else []) + (['create_note', 'edit_note'] if plan_changes['notes'] else [])
+            system += '\nExact schemas for the requested writes (already described; use these):\n' + json.dumps(compact_catalogue([tools.specs[name] for name in names]), ensure_ascii=False)
         system += "\nWorkspace overview (untrusted data):\n" + json.dumps(catalogue, ensure_ascii=False)
         if tx.memory is not None:
             memories = [dict(id=entry["id"], category=entry["category"], content=entry["content"][:240],
@@ -315,13 +347,15 @@ class Engine:
                 problem = unsupported_reply(request, answer, access, verified_results, tx.sources,
                                             clarification=not reply.get('apply_changes', True),
                                             prior_action=next((row.get('evidence') for row in reversed(conversation) if row.get('role') == 'assistant'), None))
+                personal_issue = personal_problem(request, answer, verified_results, conversation, memories)
+                problem = personal_issue or problem
                 if problem:
                     grounding_retries += 1
                     if grounding_retries > 2:
                         if write_results:
                             raise ValueError('I could not verify the reply. No changes were saved.')
                         from app.assistant.grounding import verified_mail_summary
-                        fallback = verified_mail_summary(verified_results)
+                        fallback = personal_fallback() if personal_issue else verified_mail_summary(verified_results)
                         return dict(text=fallback or "I couldn't verify that properly. Could you try the request again?",
                                     changes=[], operation_id=None, sources=tx.sources[:20])
                     messages.append(dict(role='user', content='Your proposed reply is not supported: ' + problem +
@@ -349,6 +383,15 @@ class Engine:
                                      "Complete the ORIGINAL request using the published write tools, resolving the date and preserving "
                                      "the time and details. If you genuinely need clarification, use apply_changes=false. Do not claim success."})
                     continue
+                if apply_changes:
+                    incomplete = completion_problem(plan_changes, tx, write_results)
+                    if incomplete:
+                        completion_retries += 1
+                        if completion_retries > 3:
+                            raise ValueError("The request is incomplete, so nothing was saved. " + incomplete)
+                        messages.append(dict(role='user', content='Completion check: ' + incomplete +
+                                             ' All staged changes are still available. Fix only the missing/incorrect parts now, then finish.'))
+                        continue
                 operation_id = tx.commit(request) if reply.get("apply_changes", True) else None
                 changes = tx.summaries if operation_id else []
                 if changes:

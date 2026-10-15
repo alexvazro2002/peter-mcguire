@@ -5,10 +5,14 @@ import json
 import re
 from urllib.parse import urlsplit
 from app.assistant.conversation import spoken_answer
+from app.assistant.personal_grounding import TRUTH_RULES, personal_problem, personal_fallback
 
 FINAL_SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}, "apply_changes": {"type": "boolean"}},
                 "required": ["answer", "apply_changes"], "additionalProperties": False}
-INSTRUCTIONS = """You are Peter McGuire, a warm, candid British personal assistant. Everything
+INSTRUCTIONS = """An email does not establish personal facts about the user. Never claim to have
+their CV, degree, experience or qualifications without their explicit statements. Job requirements
+are not their biography. If personal evidence is absent, say so and ask for it.
+You are Peter McGuire, a warm, candid British personal assistant. Everything
 you say is spoken aloud: use contractions and plain conversational sentences, without headings,
 bullets, raw URLs or internal IDs. Use 'sir' occasionally. Usually answer in two to four short
 sentences; give detail when asked, without a reflexive follow-up question.
@@ -46,7 +50,7 @@ def reading_text(text):
     return re.sub(r'https?://[^\s<>]+', link, text), shortened
 
 
-def _complete(client, messages, cancel, *, tokens=384):
+def _complete(client, messages, cancel, *, tokens=384, request="", conversation=()):
     from app.assistant.engine import parse_reply
     for attempt in range(3):
         if cancel.is_set():
@@ -58,14 +62,22 @@ def _complete(client, messages, cancel, *, tokens=384):
                 raise ValueError("An email reading needs an answer, without tools.")
             if cancel.is_set():
                 raise ValueError("Request cancelled.")
-            return reply["answer"].strip()
+            answer = reply["answer"].strip()
+            problem = personal_problem(request, answer, [], conversation)
+            if problem:
+                if attempt == 2:
+                    return personal_fallback()
+                messages = [*messages, dict(role='user', content='Unsupported personal claim: ' + problem +
+                                            ' Return an answer limited to the supplied email; state that personal details are missing if needed.')]
+                continue
+            return answer
         except (ValueError, KeyError, TypeError):
             if attempt == 2 or cancel.is_set():
                 raise ValueError("The local model could not finish this email reading. Please retry.")
             messages = [*messages, {"role": "user", "content": "Return only the JSON answer. No tool calls or surrounding prose."}]
 
 
-def read_selected_email(access, request, client, settings, cancel, emit):
+def read_selected_email(access, request, client, settings, cancel, emit, *, conversation=()):
     from app.assistant.engine import input_budget, prompt_bytes
     emit(type="status", message="Reading the email you identified")
     if cancel.is_set():
@@ -109,8 +121,8 @@ def read_selected_email(access, request, client, settings, cancel, emit):
             summaries.append(_complete(client, [system, evidence(chunk_data), chunk_question], cancel))
             offset = end
         messages = [system, evidence(dict(email, text='\n'.join(summaries), locally_summarised_sections=len(summaries))), question]
-    answer = _complete(client, messages, cancel)
+    answer = _complete(client, messages, cancel, request=request, conversation=conversation)
     if email['body_limit_reached']:
         answer += ' The message exceeded the reading limit; open the email for the remainder.'
     return dict(text=spoken_answer(answer), changes=[], operation_id=None, email_content=True, untrusted=True,
-                sources=[source])
+                sources=[source], evidence=dict(tools=['read_gmail']))

@@ -186,7 +186,8 @@ def _other_topic(request):
     # A reference to an email must not silently survive a topic change. Questions
     # about a time/date *in* that email remain valid content questions.
     return bool(not re.search(_MAIL_WORD, request, re.I) and re.search(
-        r"\b(?:weather|calendar)\b|\b(?:my|the|this|that|a)\s+(?:notes?|tasks?|files?|folder|document)\b|"
+        r"\b(?:weather|calendar)\b|\b(?:my|your|the|this|that|a)\s+(?:notes?|tasks?|files?|folder|document|"
+        r"cv|résumé|resume|curriculum vitae|cover letter|work history|experience|qualifications|background)\b|"
         r"\b(?:what(?:'s| is) the time|what time is it|today's date)\b", request, re.I))
 
 
@@ -216,6 +217,50 @@ def _email_continuation(request):
                 or re.fullmatch(r'(?:(?:can|could|would) you\s+)?open the(?: for me)?[?.!]*', text, re.I)
                 or re.search(_REFERENCE_WORD, text, re.I) and re.search(r"\b(?:open|show|see|search|find|check|look)\b", text, re.I)
                 or re.fullmatch(r"\s*(?:any luck|anything yet|try again|check again|search again|look again|did you find anything|what did you find|did you get anything|have you found anything|both(?: of (?:the|those|these))?(?: ones)?(?: you just (?:said|mentioned))?)[?.!]*\s*", text, re.I))
+
+
+def _accepted_read_question(request, conversation):
+    """Recognise assent to the immediately preceding, explicitly read-only offer.
+
+    This identifies intent only. Callers must separately resolve a verified email
+    source; a question or a claimed message in assistant prose is never evidence.
+    In particular, assent to a CV question must not authorise another inbox read.
+    """
+    if not re.fullmatch(r"(?:yes|yeah|yep|yup|sure|okay|ok|please do|go ahead|do that)"
+                        r"(?:[, ]+(?:please|go ahead|do that))?[.!]*", request_text(request), re.I):
+        return ''
+    rows = [row for row in conversation if not row.get('daily_greeting')]
+    if not rows or rows[-1].get('role') != 'assistant' or rows[-1].get('error'):
+        return ''
+    question = re.search(r'([^.!?]*\?)\s*$', rows[-1].get('text', ''))
+    if not question:
+        return ''
+    question = question[1].strip()
+    if not re.search(r"\b(?:would you like|do you want|want me|shall I|should I|can I)\b", question, re.I):
+        return ''
+    if re.search(r"\b(?:send|reply|forward|draft|delete|archive|mark|move|change|save|create|schedule|"
+                 r"cv|résumé|resume|curriculum vitae|cover letter|files?|documents?)\b", question, re.I):
+        return ''
+    if not (re.search(r"\b(?:read|summari[sz]e|explain|go through|pull up|look through|show|tell you)\b", question, re.I)
+            and re.search(r"\b(?:it|this|that|e-?mail|message|details?|requirements?|contents?|body|role|job)\b", question, re.I)):
+        return ''
+    return question
+
+
+def _history_email_continuation(rows, index):
+    text = rows[index].get('text', '')
+    return _email_continuation(text) or bool(_accepted_read_question(text, rows[:index]))
+
+
+def accepted_email_read_request(request, conversation, references):
+    """Turn a grounded 'yes' into a reading request, without repeating model claims."""
+    question = _accepted_read_question(request, conversation) if references else ''
+    if not question:
+        return ''
+    if re.search(r'\b(?:requirements?|criteria|experience|qualifications)\b', question, re.I):
+        return ('Read the selected email and summarise the requirements it actually states. '
+                'Do not assume any facts about my experience or CV; ask for those if needed for a comparison.')
+    return 'Read the selected email and explain its contents, using only what it actually says.'
 
 
 def _source_email(source):
@@ -272,11 +317,11 @@ def recent_email_references(conversation):
             if row.get('sources') or index == 0 or rows[index - 1].get('role') != 'user':
                 return []
             previous = request_text(rows[index - 1].get('text', ''))
-            if not (re.search(_MAIL_WORD, previous, re.I) or _email_continuation(previous)):
+            if not (re.search(_MAIL_WORD, previous, re.I) or _history_email_continuation(rows, index - 1)):
                 return []
         elif row.get('role') == 'user':
             text = request_text(row.get('text', ''))
-            if _email_search_request(text) or not _email_continuation(text):
+            if _email_search_request(text) or not _history_email_continuation(rows, index):
                 return []
     return []
 
@@ -297,7 +342,7 @@ def recent_email_context(conversation):
             original = row.get('text', '')
             text = request_text(original)
             explicit = bool(re.search(_MAIL_WORD, text, re.I) and not _email_write_request(text))
-            if not explicit and not _email_continuation(text):
+            if not explicit and not _history_email_continuation(rows, index):
                 break
             authorized = authorized or explicit
             context.append(original)
@@ -306,9 +351,9 @@ def recent_email_context(conversation):
 
 def referenced_email(request, conversation):
     """Select a single verified message only for a content follow-up."""
-    if not _email_body_request(request_text(request)):
-        return None
     sources = recent_email_references(conversation)
+    if not (_email_body_request(request_text(request)) or accepted_email_read_request(request, conversation, sources)):
+        return None
     read = [source for source in sources if source.get('email_read')]
     sources = read[-1:] or sources
     return sources[0] if len(sources) == 1 else None
@@ -321,10 +366,12 @@ class RequestAccess:
         text = request_text(request)
         self.email_context = recent_email_context(conversation)
         self.email_references = recent_email_references(conversation)
-        self.email_followup = bool(_email_continuation(text) and (self.email_context or self.email_references))
+        accepted_read = accepted_email_read_request(request, conversation, self.email_references)
+        self.email_read_request = accepted_read or request
+        self.email_followup = bool((_email_continuation(text) or accepted_read) and (self.email_context or self.email_references))
         self.email_authorized = bool(not _email_write_request(text) and (
             re.search(_MAIL_WORD, text, re.I) or self.email_followup))
-        self.email_body_request = bool(self.email_authorized and _email_body_request(text))
+        self.email_body_request = bool(self.email_authorized and (_email_body_request(text) or accepted_read))
         self.email_search_request = bool(self.email_authorized and _email_search_request(text))
         self.ambiguous_email = bool(self.email_body_request and len(self.email_references) > 1
                                     and not any(row.get('email_read') for row in self.email_references))

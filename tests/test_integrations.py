@@ -432,3 +432,30 @@ def test_weather_without_location_asks_for_a_city_and_extra_actions_remain_in_en
     result=ExternalAccess().quick_answer("What's the weather like today?",'Europe/London')
     assert 'Which city' in result['text']
     assert weather_request('Check weather in London and create a task') is None
+
+
+@pytest.mark.parametrize('yes', ['yes', 'yeah', 'sure', 'yes please'])
+def test_assent_to_verified_email_offer_reads_body(tmp_path, yes):
+    history=selected_mail_history()
+    history[-1]['text']="Want me to pull up the full details so you can see what they're looking for?"
+    calls=[]; prompts=[]
+    def complete(messages, **kw):
+        prompts.extend(messages)
+        return dict(content='{"answer":"The email contains an offer.","apply_changes":false}')
+    result=Engine(*stores(tmp_path), SimpleNamespace(complete=complete), {'context_size':8192},
+                  external=ExternalAccess(gmail=fake_mail_client(calls))).run(yes, history)
+    assert calls == ['abc123'] and result['sources'][0]['email_read']
+    assert 'using only what it actually says' in prompts[-1]['content']
+
+
+@pytest.mark.parametrize('offer', ['Shall I pull up your CV?', 'Shall I delete this email?', 'Would you like me to draft a reply?'])
+def test_yes_does_not_accept_cv_or_write_offer_as_email_read(offer):
+    history=selected_mail_history(); history[-1]['text']=offer
+    access=ExternalAccess(gmail=fake_mail_client([])).for_request('yes',history)
+    assert access.selected_email is None and not access.email_authorized
+
+
+def test_cv_question_ends_email_topic():
+    history=selected_mail_history()
+    access=ExternalAccess(gmail=fake_mail_client([])).for_request('Do you have my CV?',history)
+    assert not access.email_authorized and access.selected_email is None
