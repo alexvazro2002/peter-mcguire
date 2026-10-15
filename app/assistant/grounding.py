@@ -47,7 +47,10 @@ def unsupported_reply(request, answer, access, results, sources, *, clarificatio
     if re.search(r"\b(?:I(?:'ve| have)? closed|(?:email|file|tab|window|browser)(?: is| has been| was| are| have been)?(?: now)? closed)\b", answer, re.I) or (not historical_open and re.search(
             r"\b(?:I(?:'ve| have)? opened|(?:email|file|tab|window|browser)(?: is| has been| was| are| have been)?(?: now)? opened)\b", answer, re.I)):
         return 'The model has no browser or file-opening/closing tool. Do not claim that action happened.'
-    if re.match(r'\s*(?:Searching|Checking|Reading|Opening)\b', answer, re.I) or re.search(
+    pending = bool(re.search(r"\b(?:give me|wait|just a|one)\s+(?:(?:just|a|one)\s+)*(?:second|moment|minute)\b|"
+                             r"\blet(?:'s| us) (?:get|fetch|pull up|look up|check|find|search|read)\b|"
+                             r"\bI(?:'ll| will| shall| am going to) (?:fetch|get|pull up|look up|find)\b", answer, re.I))
+    if pending or re.match(r'\s*(?:Searching|Checking|Reading|Opening)\b', answer, re.I) or re.search(
             r"\bI (?:will|shall|'ll|am going to) (?:search|check|read|open)\b", answer, re.I):
         if getattr(access, 'email_authorized', False):
             return 'This is a final reply, not background work. Complete the requested email operation now.'

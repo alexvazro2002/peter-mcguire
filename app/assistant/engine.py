@@ -218,6 +218,11 @@ class Engine:
                 re.search(r"\b(?:e-?mail|gmail|inbox)\b", request, re.I) or re.search(r"\b(?:reply|forward)\b", request, re.I) and any(
                     source.get("kind") == "email" for item in conversation[-2:] for source in item.get("sources", []))):
             return dict(text="Gmail is read-only, sir. I can read and assess your emails, but I cannot send, draft or change them.", changes=[], operation_id=None, sources=[])
+        if self.external is not None:
+            from app.assistant.mail_subjects import subject_answer
+            subjects = subject_answer(request, conversation, self.external.gmail, self.zone, cancel=cancel, now=self.now)
+            if subjects is not None:
+                return subjects
         self.history.recover()
         access = self.external.for_request(request, conversation) if self.external is not None else None
         if access is not None and getattr(access, 'ambiguous_email', False):

@@ -416,3 +416,34 @@ def test_empty_filtered_search_still_reports_verified_account_total(configured):
     client,backend=configured;backend.recent_ids=[]
     result=client.search('from:nobody@example.test',scope='all')
     assert result['messages']==[] and result['account_messages_total']==2
+
+
+def test_complete_header_listing_follows_all_pages_and_never_reads_bodies(configured,monkeypatch):
+    client,backend=configured
+    backend.mail={f'm{i}':mail(f'm{i}',received=100000-i) for i in range(63)}
+    pages=[]
+    original=client._api
+    def api(session,path,**kwargs):
+        if path=='/messages':
+            params=kwargs['params'];pages.append(params.copy())
+            if not params.get('pageToken'):
+                return dict(messages=[dict(id=f'm{i}') for i in range(50)],nextPageToken='second')
+            return dict(messages=[dict(id=f'm{i}') for i in range(50,63)])
+        return original(session,path,**kwargs)
+    monkeypatch.setattr(client,'_api',api)
+    result=client.list_headers('-in:sent -in:drafts after:100 before:200',limit=None,scope='all')
+    assert result['complete'] and len(result['messages'])==63
+    assert len(pages)==2 and pages[1]['pageToken']=='second'
+    reads=[kwargs for method,url,kwargs in backend.calls if '/messages/' in url]
+    assert len(reads)==63 and all(k['params']['format']=='metadata' for k in reads)
+    assert all(not row['body'] and row['metadata_only'] for row in result['messages'])
+
+
+def test_recent_header_count_is_user_requested_not_model_preview(configured):
+    client,backend=configured
+    backend.mail={f'm{i}':mail(f'm{i}',received=100000-i) for i in range(8)}
+    backend.recent_ids=list(backend.mail)
+    result=client.list_headers('-in:sent -in:drafts',limit=5,scope='all')
+    assert len(result['messages'])==5 and result['complete']
+    with pytest.raises(GmailError,match='date range'):
+        client.list_headers('-in:sent -in:drafts',limit=None)

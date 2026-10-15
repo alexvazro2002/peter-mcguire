@@ -13,6 +13,8 @@ from app.email_briefing import header_message
 def request_text(request):
     """Normalise common dictation spellings and an address to Peter only."""
     text = request.replace('’', "'")
+    text = re.sub(r'\b(?:emals|emials|emaills|emais)\b', 'emails', text, flags=re.I)
+    text = re.sub(r'\b(?:emal|emial|eamil)\b', 'email', text, flags=re.I)
     text = re.sub(r'\be[ -]+mails?\b', lambda m: 'emails' if m[0].lower().endswith('s') else 'email', text, flags=re.I)
     text = re.sub(r'\bg[ -]+mail\b', 'Gmail', text, flags=re.I)
     text = re.sub(r'^\s*(?:(?:hey|hello|hi|okay|ok)\s*[,.:]?\s*)?peter\s*[,.:]?\s*', '', text, flags=re.I)
@@ -114,6 +116,10 @@ class ExternalAccess:
         return RequestAccess(self, request, conversation)
 
     def quick_answer(self, request, zone, *, cancel=None, conversation=()):
+        from app.assistant.mail_subjects import subject_answer
+        subjects = subject_answer(request, conversation, self.gmail, zone, cancel=cancel)
+        if subjects is not None:
+            return subjects
         location = weather_request(request)
         if location is not None:
             location = location or referenced_public_location(conversation)
@@ -193,6 +199,8 @@ def _other_topic(request):
 
 def _email_body_request(request):
     if _email_write_request(request) or _other_topic(request):
+        return False
+    if re.search(r'\bsubjects?(?: lines?)?\b', request, re.I) and not re.search(r'\b(?:body|bodies|contents?)\b', request, re.I):
         return False
     reference = re.search(_REFERENCE_WORD + '|' + _MAIL_WORD, request, re.I)
     action = re.search(r"\b(?:read|summari[sz]e|explain|analyse|analyze|think|says?|means?|mention|include|contain|opinion|thoughts|assessment|details?|more|salary|pay|wages?|deadline|offer|position|role)\b", request, re.I)

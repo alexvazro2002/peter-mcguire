@@ -230,3 +230,21 @@ task ID/details, creates additional occurrences, and formats the observations wi
 dates and times. Every clause must match and the existing task must be unambiguous;
 other requests use the model/tool loop with the same transaction checks. No partial
 parser executes extra clauses. All changes retain the existing journal and undo.
+
+
+## Complete email subject lists
+
+Routine requests to list/read email subjects use `mail_subjects.py` and a dedicated
+read-only `GmailClient.list_headers` operation. The reply contains the actual
+subjects in the same request, without model inference or a placeholder promising
+later work. Common email spelling errors are normalised. Subject-only requests do
+not select an email body or ask which of several messages to read.
+
+A local-day query uses timezone-aware midnight boundaries and enumerates all Gmail
+pages, rather than treating the tool planner's four-row preview as a complete list.
+A requested recent count (for example five) is honoured. No bodies are fetched, mail
+is not marked read, and normal Gmail read-only permissions remain unchanged.
+Unsupported filters or additional actions stay in the ordinary tool planner; this
+routine never silently drops them. Cancellation, API errors and incomplete results
+cannot become a successful subject list. The final-reply guard also rejects
+announcements such as “give me a second to fetch them” as a completed email answer.

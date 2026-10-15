@@ -490,6 +490,27 @@ class GmailClient:
             return dict(account=account, messages=messages, scope=scope,
                         account_messages_total=self._profile_totals.get('messagesTotal'), source="gmail", untrusted=True)
 
+    def list_headers(self, query, *, limit=None, cancel=None, scope="all"):
+        """Enumerate a complete requested set of received headers, including all API pages.
+
+        A finite limit means the user's requested recent count. None exhausts a
+        bounded date query; this operation never fetches bodies or changes mail.
+        """
+        if not isinstance(query, str) or not query.strip() or len(query) > 1000:
+            raise GmailError('A subject list needs a bounded Gmail query.')
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000):
+            raise GmailError('Choose between 1 and 1,000 recent email subjects.')
+        if limit is None and not re.search(r'\bafter:\d+', query):
+            raise GmailError('Choose a date range before listing every email subject.')
+        with self._lock, self._session_factory() as session:
+            account, _ = self._profile(session, cancel)
+            ids = self._ids(session, query=query.strip(), limit=limit or 0, cancel=cancel, scope=scope)
+            messages = [self._read(session, message_id, cancel, headers_only=True)[1] for message_id in ids]
+            messages.sort(key=lambda row: row['received_ms'], reverse=True)
+            _check(cancel)
+            return dict(account=account, messages=messages, scope=scope, complete=True, metadata_only=True,
+                        source='gmail', untrusted=True)
+
     def latest(self, *, scope="all", cancel=None):
         """Newest received mail, including archived mail, without an invented date."""
         return self.search("-in:sent -in:drafts", limit=1, scope=scope, cancel=cancel)
