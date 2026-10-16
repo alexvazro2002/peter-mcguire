@@ -116,7 +116,7 @@ def test_describe_tools_retains_validated_schemas_and_paging(workspace):
 
 
 def test_history_eviction_keeps_current_request_and_pending_write_evidence(workspace):
-    request = "Create a note titled Context check with text Verified. " + "Please keep this request intact. " * 120
+    request = "Please keep this request intact. " * 120 + "Create a note titled Context check with text Verified."
     model = ScriptedModel({"tool_calls": [call("create_note", name="Context check", content="Verified.")]},
                           {"answer": "", "apply_changes": True})
     conversation = [{"role": role, "text": "old " + "z" * 5000}

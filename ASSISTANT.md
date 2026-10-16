@@ -339,3 +339,25 @@ GPU memory for ordinary answers. User-preloaded models are not unloaded.
 The desktop window starts maximised with its normal frame and title bar. Peter's
 own replies use a professionally warm, lightly playful butler manner; routine
 confirmations and greetings no longer append “sir”. Literal quoted mail is preserved.
+
+## Separate task wording from its schedule
+
+In an explicit creation such as “Add a task for 21:00 to finish my cooking before
+20:22”, the schedule is 21:00 and the task wording retains “before 20:22”. A clock
+inside the description does not replace the scheduling clock or cause an automatic
+contradiction prompt. Time-only scheduling uses the local current day and states
+that date in the confirmation; explicit days use the normal date resolver.
+
+Common, fully understood task-plus-note creations use one checked transaction,
+without model planning. Unquoted note titles and `include`/`including` retain the
+entire requested payload. Short recognised ingredient lists become Markdown with
+one bullet per ingredient, preserving garlic powder and an explicit black pepper
+clarification. Unknown ingredient phrases or extra actions continue to the general
+planner; no recognised prefix is saved as a partial completed request.
+
+Completion checks preserve multiword ingredients, accept useful subject headings,
+and reject a newly created note containing an identical repeated section. Existing
+different note contents are preserved for normal read-and-merge planning. Repeating
+an already completed identical task-plus-note request is a no-op, and a saved pair
+can be undone together. Long note requirements are compacted only in model guidance;
+the complete user payload remains available to execution and completion checks.

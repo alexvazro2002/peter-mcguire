@@ -19,6 +19,7 @@ from app.assistant.model_fallback import ModelToolError, ToolFallback
 from app.assistant.progress import acknowledgement
 from app.assistant.email_tasks import respond as email_task
 from app.assistant.inference import DeadlineClient
+from app.assistant.simple_creation import respond as simple_creation
 
 
 class AssistantService:
@@ -107,6 +108,10 @@ class AssistantService:
                 acknowledge(initial)
             delayed.start()
             try:
+                direct = simple_creation(request, self.vault, self.calendar, self.history, self.cancel, self.zone)
+                if direct is not None:
+                    emit(type='answer', **direct)
+                    return
                 request_runtime = SimpleNamespace(ensure=getattr(self.runtime, 'ensure', lambda: None), settings=getattr(self.runtime, 'settings', {}),
                     client=DeadlineClient(getattr(self.runtime, 'client', None), self.cancel))
                 direct = email_task(request, conversation, self.vault, self.calendar, self.history, self.cancel, self.zone)

@@ -18,6 +18,7 @@ from app.assistant.personal_grounding import TRUTH_RULES, personal_problem, pers
 from app.assistant.completion import completion_plan, completion_problem, completion_guidance, explicit_compound_actions
 from app.assistant.model_fallback import ModelToolError
 from app.assistant.progress import workspace_write_request
+from app.assistant.simple_creation import respond as simple_creation
 
 INSTRUCTIONS = SPOKEN_STYLE + "\n" + TRUTH_RULES + """
 Answer ordinary conversation and
@@ -218,6 +219,9 @@ class Engine:
         if not isinstance(request, str) or not request.strip() or len(request) > 8000:
             raise ValueError("Enter a message between 1 and 8,000 characters.")
         cancel = cancel or threading.Event()
+        direct = simple_creation(request,self.vault,self.calendar,self.history,cancel,self.zone,self.now)
+        if direct is not None:
+            return direct
         if self.external is not None and re.match(r"\s*(?:(?:please|can you|could you|would you)\s+)*(?:send|reply|forward|draft|delete|archive|mark (?:as )?read|change labels)\b", request, re.I) and (
                 re.search(r"\b(?:e-?mail|gmail|inbox)\b", request, re.I) or re.search(r"\b(?:reply|forward)\b", request, re.I) and any(
                     source.get("kind") == "email" for item in conversation[-2:] for source in item.get("sources", []))):
@@ -262,15 +266,18 @@ class Engine:
             return dict(text='Done. ' + ' '.join(tx.summaries), changes=tx.summaries, operation_id=operation_id,
                         sources=tx.sources, evidence=dict(tools=[row['tool'] for row in executed]))
         system = INSTRUCTIONS
-        if plan_changes["notes"] or plan_changes["slots"]:
-            system += "\nRequired outcomes from the user request (verify ALL before finishing; slots use local dates):\n" + json.dumps(completion_guidance(plan_changes, tx), ensure_ascii=False)
+        if plan_changes["notes"] or plan_changes["slots"] or plan_changes.get('task_definitions'):
+            system += "\nRequired outcomes from the user request (verify ALL before finishing; slots use local dates):\n" + json.dumps(completion_guidance(plan_changes, tx), ensure_ascii=False,separators=(',',':'))
         memories = []
         system += "\nAvailable tools (fetch exact argument schemas with describe_tools; $ref refers to $defs):\n"
         system += progressive_catalogue(tools)
-        if plan_changes['slots'] or plan_changes['notes']:
-            names = (['edit_task', 'create_task'] if plan_changes['slots'] else []) + (['create_note', 'edit_note'] if plan_changes['notes'] else [])
-            system += '\nExact schemas for the requested writes (already described; use these):\n' + json.dumps(compact_catalogue([tools.specs[name] for name in names]), ensure_ascii=False)
-        system += "\nWorkspace overview (untrusted data):\n" + json.dumps(catalogue, ensure_ascii=False)
+        if plan_changes['slots'] or plan_changes['notes'] or plan_changes.get('task_definitions'):
+            note_names = ['create_note'] if plan_changes['notes'] else []
+            if any(requirement['name'].casefold() in {name.casefold() for name in tx.names()} for requirement in plan_changes['notes']):
+                note_names.append('edit_note')
+            names = (['edit_task', 'create_task'] if plan_changes['slots'] or plan_changes.get('task_definitions') else []) + note_names
+            system += '\nExact schemas for the requested writes (already described; use these):\n' + json.dumps(compact_catalogue([tools.specs[name] for name in names]), ensure_ascii=False,separators=(',',':'))
+        system += "\nWorkspace overview (untrusted data):\n" + json.dumps(catalogue, ensure_ascii=False,separators=(',',':'))
         if tx.memory is not None:
             memories = [dict(id=entry["id"], category=entry["category"], content=entry["content"][:240],
                              preview=len(entry["content"]) > 240) for entry in tx.memory.relevant(request)[:3]]
@@ -335,6 +342,11 @@ class Engine:
                 while history_count and messages[1]["role"] == "assistant":
                     messages.pop(1)
                     history_count -= 1
+            if output_tokens == tool_output_tokens and prompt_bytes(messages)>budget and prompt_bytes(messages)<=input_budget(self.settings,512):
+                # A short final confirmation does not need the larger tool-call
+                # reserve. Keep the current request and verified write evidence.
+                output_tokens = 512
+                budget = input_budget(self.settings, output_tokens)
             if prompt_bytes(messages) > budget:
                 raise ValueError("This request exceeded the model context budget. Nothing was saved. Split it into smaller requests or increase Context size.")
             emit(type="status", message="Thinking about your request" if round_id == 0 else "Reviewing workspace results")

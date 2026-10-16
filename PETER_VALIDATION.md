@@ -1,5 +1,29 @@
 # Peter (McGuire) — verification record
 
+## 16 October: compound task wording and complete notes
+
+The final source passes **1,041 tests in 31.85 seconds** with the installed Python
+environment and loopback fixtures enabled.
+
+The original cooking/Recipes request failed after approximately 63 seconds: Qwen
+returned three responses across about 24 seconds, then the fallback spent its
+30-second response budget processing the larger prompt. Nothing was saved. The
+completion parser had missed the unquoted note title and `include` payload, and it
+did not distinguish a clock inside task wording from the requested schedule.
+
+The user's clarification establishes that 21:00 is the schedule and “finish before
+20:22” belongs to the task wording. A replay of the exact saved request in temporary
+storage now completed in **0.0081 seconds**, with **zero model calls**, a task at
+21:00 retaining that wording, and one Recipes note containing onion, garlic powder,
+paprika, black pepper and salt. Both actions were saved in one undoable transaction.
+No real test task or note was added to the user's workspace during validation.
+
+Regression coverage includes exact schedule/title separation, all ingredients and
+qualifiers, no split garlic/powder entries, no duplicated note section, idempotent
+retry, joint undo, cancellation, preserving existing recipes, and deferring extra
+unrecognised actions without partial writes. The note parser accepts unquoted and
+quoted multiword names, `include`/`including`, and literal quoted action wording.
+
 ## 15 October: consistent voice, summaries and bounded action planning
 
 The final source passes **991 tests in 31.62 seconds** with the installed Python
