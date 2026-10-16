@@ -3,7 +3,7 @@
 Only loopback HTTP is accepted. Capture and playback use Fedora's existing
 PipeWire/ALSA tools. Audio lives in temporary directories and is never journaled.
 One worker serializes transcription/playback and drops cancelled results. A
-separate microphone stream discards input while Peter is processing a reply.
+separate microphone stream can interrupt a reply when hands-free speech begins.
 """
 from __future__ import annotations
 
@@ -97,6 +97,7 @@ class VoiceController:
         self._process_tasks = {}
         self.hands_free = bool(self.settings.get('hands_free', False))
         self._auto_allowed = threading.Event()
+        self._interrupt_allowed = threading.Event()
         self._auto_fault, self._operation, self._resume_after = False, None, 0
         self._manual_requested = False
         self._mic_process, self._mic_cancel = None, threading.Event()
@@ -160,6 +161,20 @@ class VoiceController:
         else:
             self._auto_allowed.clear()
 
+    def allow_interruptions(self, allowed):
+        """Listen for an interruption while the UI is reasoning or speaking."""
+        if allowed and self.hands_free and self.settings.get('enabled', True):
+            self._interrupt_allowed.set()
+        else:
+            self._interrupt_allowed.clear()
+
+    @property
+    def active(self):
+        """Include queued speech and synthesis before playback has begun."""
+        with self._lock:
+            return (self._operation is not None or not self._pending.empty()
+                    or self._awaiting_transcript)
+
 
     def toggle_listen(self):
         with self._lock:
@@ -177,6 +192,7 @@ class VoiceController:
     def cancel(self):
         with self._lock:
             self._auto_allowed.clear()
+            self._interrupt_allowed.clear()
             self._awaiting_transcript = False
             self._generation += 1
             self._active_cancel.set()
@@ -224,7 +240,9 @@ class VoiceController:
                 if operation == "record":
                     self._record(session, cancelled)
                 elif operation == 'hands_free':
-                    self._transcribe_pcm(session, text, cancelled, automatic=True)
+                    pcm, interrupted = text if isinstance(text, tuple) else (text, False)
+                    self._transcribe_pcm(session, pcm, cancelled, automatic=True,
+                                         interrupted=interrupted)
                 elif operation == "speak":
                     text, captions = text if isinstance(text, tuple) else (text, True)
                     self._speak(session, text, cancelled, captions=captions)
@@ -544,7 +562,7 @@ class VoiceController:
         pcm = self._capture_pcm(cancelled, automatic=automatic)
         self._transcribe_pcm(session, pcm, cancelled, automatic=automatic)
 
-    def _transcribe_pcm(self, session, pcm, cancelled, *, automatic):
+    def _transcribe_pcm(self, session, pcm, cancelled, *, automatic, interrupted=False):
         self._check(cancelled)
         if len(pcm) < 16000 * 2 * .25:
             if automatic:
@@ -558,9 +576,10 @@ class VoiceController:
                 wav.setsampwidth(2)
                 wav.setframerate(16000)
                 wav.writeframes(pcm)
-            self._transcribe(session, audio, cancelled, automatic=automatic)
+            self._transcribe(session, audio, cancelled, automatic=automatic,
+                             interrupted=interrupted)
 
-    def _transcribe(self, session, audio, cancelled, *, automatic=False):
+    def _transcribe(self, session, audio, cancelled, *, automatic=False, interrupted=False):
         self._status("thinking", "Transcribing locally", cancelled)
         with audio.open("rb") as source:
             response = self._request(session, "POST", "/v1/audio/transcriptions", cancelled,
@@ -586,7 +605,8 @@ class VoiceController:
             self._auto_allowed.clear()
             self._status("idle", "Speech recognized", cancelled)
             self._check(cancelled)
-            self.events.put(dict(type="transcript", text=text, generation=self._generation))
+            self.events.put(dict(type="transcript", text=text, generation=self._generation,
+                                 interrupted=interrupted))
 
     def valid_event(self, event):
         with self._lock:
@@ -599,15 +619,38 @@ class VoiceController:
                     and self._operation is None and self._pending.empty()
                     and time.monotonic() >= self._resume_after)
 
+    def _microphone_mode(self):
+        with self._lock:
+            if self._microphone_ready():
+                return 'listen'
+            if (self._interrupt_allowed.is_set() and not self._awaiting_transcript
+                    and not self._manual_requested
+                    and self._operation not in {'record', 'hands_free'}
+                    and (self._operation in {'speak', 'startup'}
+                         or time.monotonic() >= self._resume_after)):
+                return 'interrupt'
+            return None
+
+    def _begin_interruption(self, generation):
+        # The generation check, cancellation and hand-off are one operation:
+        # a simultaneous Stop cannot accidentally revive the discarded audio.
+        with self._lock:
+            if generation != self._generation or self._closed.is_set():
+                return None
+            self.cancel()
+            self._awaiting_transcript = True
+            self.events.put(dict(type='voice_interrupt', generation=self._generation))
+            return self._generation
+
     def _hands_free_loop(self):
-        """Keep the capture stream warm; discard all samples during a reply."""
+        """Keep capture warm, with a stricter onset while interrupting a reply."""
         while not self._closed.wait(.05):
             if (not self.hands_free or not self.settings.get('enabled', True) or self._auto_fault
                     or time.monotonic() < self._auto_retry_at):
                 continue
             # Open only once listening has been enabled. Subsequently preserve
             # the stream while the reasoning/playback gate is closed.
-            if not self._microphone_ready():
+            if self._microphone_mode() is None:
                 continue
             stop = threading.Event()
             self._mic_cancel = stop
@@ -625,13 +668,23 @@ class VoiceController:
                     self.events.put(dict(type='voice_error', message=message))
 
     def _listen_continuously(self, stop):
-        detector = UtteranceDetector(max_seconds=self.record_seconds)
+        detectors = {
+            'listen': UtteranceDetector(max_seconds=self.record_seconds),
+            # Eight voiced frames (~240 ms), with a quiet-noise floor, prevent
+            # clicks or a brief breath from stopping Peter. Keep the opening
+            # words in a longer preroll while that decision is being made.
+            'interrupt': UtteranceDetector(max_seconds=self.record_seconds,
+                onset_window=10, onset_required=8, minimum_rms=150, preroll_frames=20),
+        }
+        detector = detectors['listen']
         argv = self._capture_command()
         with tempfile.TemporaryFile() as errors:
             process = self._popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=errors, start_new_session=True, bufsize=0)
             self._mic_process = process
-            started, last_audio, active_gate = time.monotonic(), None, False
+            started, last_audio, active_mode = time.monotonic(), None, None
+            announced_listen = False
+            capturing_interrupt = False
             capture_generation = self._generation
             pending = bytearray()
             if self._microphone_ready():
@@ -646,14 +699,19 @@ class VoiceController:
                             raise VoiceError('The microphone is not delivering audio. Check that Yeti Orb is connected and selected as the input device.')
                         if last_audio is not None and now - last_audio >= self.capture_stall_timeout:
                             raise VoiceError('Microphone audio stopped. Check the input device, then try again.')
-                        ready = self._microphone_ready()
-                        if not ready:
+                        if capture_generation != self._generation:
+                            capturing_interrupt = False
+                            active_mode = None
                             detector.reset()
                             pending.clear()
-                            active_gate = False
-                        elif last_audio is not None and not active_gate:
-                            self._status('armed', 'Hands-free on · Speak when ready', stop)
-                            active_gate = True
+                        mode = 'interrupt_capture' if capturing_interrupt else self._microphone_mode()
+                        if mode != active_mode:
+                            for candidate in detectors.values():
+                                candidate.reset()
+                            pending.clear()
+                            active_mode = mode
+                            announced_listen = False
+                            detector = detectors['interrupt' if mode == 'interrupt' else 'listen']
                             capture_generation = self._generation
                         if not selector.select(timeout=.05):
                             if process.poll() is not None:
@@ -663,24 +721,48 @@ class VoiceController:
                         if not data:
                             raise VoiceError('The microphone capture stopped. Check the selected input device.')
                         last_audio = now
-                        if not ready:
+                        if mode is None:
                             continue
+                        if mode == 'listen' and not announced_listen:
+                            self._status('armed', 'Hands-free on · Speak when ready', stop)
+                            announced_listen = True
                         pending.extend(data)
                         while len(pending) >= detector.frame_bytes:
+                            if capture_generation != self._generation:
+                                pending.clear()
+                                detector.reset()
+                                active_mode = None
+                                capturing_interrupt = False
+                                break
                             frame = bytes(pending[:detector.frame_bytes])
                             del pending[:detector.frame_bytes]
                             onset, clip = detector.feed(frame)
                             if onset:
+                                if mode == 'interrupt':
+                                    # Cancel playback immediately, then keep this
+                                    # detector's existing preroll and new words.
+                                    next_generation = self._begin_interruption(capture_generation)
+                                    if next_generation is None:
+                                        pending.clear()
+                                        detector.reset()
+                                        active_mode = None
+                                        break
+                                    capture_generation = next_generation
+                                    capturing_interrupt = True
+                                    active_mode = mode = 'interrupt_capture'
                                 self._status('listening', 'Listening · Finish speaking to send', stop)
                             if clip is not None:
                                 with self._lock:
-                                    if self._microphone_ready() and capture_generation == self._generation:
+                                    if ((capturing_interrupt or self._microphone_ready())
+                                            and capture_generation == self._generation):
                                         self._awaiting_transcript = True
-                                        self._pending.put_nowait(('hands_free', clip, threading.Event(), capture_generation))
+                                        payload = (clip, True) if capturing_interrupt else clip
+                                        self._pending.put_nowait(('hands_free', payload, threading.Event(), capture_generation))
                                 pending.clear()
-                                active_gate = False
+                                capturing_interrupt = False
+                                active_mode = None
                                 break
-                            if self.state == 'listening' and not detector.active:
+                            if mode == 'listen' and self.state == 'listening' and not detector.active:
                                 self._status('armed', 'Hands-free on · Speak when ready', stop)
             finally:
                 self._stop_process(process)

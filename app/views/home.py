@@ -114,9 +114,9 @@ class PeterHomeView:
         self.listen = button("Speak to Peter", lambda _: app.toggle_peter_listen(), c, ft.Icons.MIC_NONE_ROUNDED)
         self.hands_free = ft.Switch(label='Hands-free', value=app.cfg.get('peter', {}).get('hands_free', True),
             on_change=lambda e: app.set_peter_hands_free(e.control.value), scale=.85,
-            tooltip='Listen automatically when you speak; pause during Peter’s replies')
-        self.stop = ft.IconButton(ft.Icons.STOP_CIRCLE_OUTLINED, tooltip="Stop speech or current request",
-                                  icon_color=c["muted"], on_click=lambda _: app.cancel_peter())
+            tooltip='Listen automatically; speak over Peter to interrupt him')
+        self.stop = button("Stop Peter", lambda _: app.cancel_peter(), c, ft.Icons.STOP_CIRCLE_OUTLINED)
+        self.stop.tooltip = "Stop thinking and speech immediately"
         center = panel(ft.Column([
             *([] if compact else [ft.Text("PETER", size=12, color=c["text"], weight=ft.FontWeight.W_600)]),
             ft.Container(self.orb, alignment=ft.alignment.center),
@@ -427,8 +427,9 @@ class PeterHomeView:
         self.state_icon.color = self.state.color
         self.status.value = app.assistant_status if app.assistant.busy else app.peter_status
         self.model_status.value = app.peter_model_status
-        self.listen.text = "Finish listening" if state == "listening" else "Speak to Peter"
-        self.listen.disabled = app.assistant.busy or not app.cfg.get("peter", {}).get("enabled", True)
+        self.listen.text = "Interrupt & speak" if app.assistant.busy else "Finish listening" if state == "listening" else "Speak to Peter"
+        self.listen.disabled = not app.cfg.get("peter", {}).get("enabled", True)
+        self.stop.disabled = not (app.assistant.busy or getattr(app.voice, 'active', False) or state in {'speaking', 'listening'})
         self.hands_free.value = app.cfg.get('peter', {}).get('hands_free', True)
         self.hands_free.disabled = not app.cfg.get('peter', {}).get('enabled', True)
         self.listen.visible = not self.hands_free.value

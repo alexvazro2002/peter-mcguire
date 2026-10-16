@@ -21,8 +21,9 @@ class VoiceDouble:
     def valid_event(self, event): return event.get('generation', 0) == getattr(self, 'generation', 0)
     def set_hands_free(self, enabled): self.hands_free = enabled
     def allow_hands_free(self, allowed): self.allowed = allowed
+    def allow_interruptions(self, allowed): self.interruptions_allowed = allowed
     def speak(self, text, **kwargs): self.spoken.append(text)
-    def cancel(self): pass
+    def cancel(self): self.cancellations = getattr(self, 'cancellations', 0) + 1
     def close(self): pass
 
 
@@ -614,3 +615,71 @@ def test_cancelled_queued_transcript_cannot_enter_a_new_request(peter_ui,monkeyp
     app.voice.events.put(dict(type='transcript',text='A cancelled command.',generation=1))
     one_poll(app,monkeypatch)
     assert sent==[]
+
+
+def test_stop_button_is_labelled_and_releases_busy_input_immediately(peter_ui):
+    app = peter_ui
+    app.assistant.busy = True
+    app.home_view.refresh()
+    assert app.home_view.stop.text == 'Stop Peter'
+    assert not app.home_view.stop.disabled
+    before = getattr(app.voice, 'cancellations', 0)
+    app.home_view.stop.on_click(None)
+    assert not app.assistant.busy
+    assert not app.home_view.input.disabled
+    assert app.assistant_status == 'Stopped'
+    assert app.voice.cancellations == before + 1
+    assert app.assistant.messages[-1]['interrupted'] is True
+
+
+def test_stopped_request_cannot_speak_or_overwrite_new_turn(peter_ui, monkeypatch):
+    app = peter_ui
+    app.assistant.busy = True
+    previous = app.assistant._request_id
+    app.cancel_peter()
+    app.assistant._request_id += 1
+    app.assistant.busy = True
+    app.assistant.events.put(dict(type='answer', request_id=previous,
+        text='This old answer must not return.', sources=[], changes=[], operation_id=None))
+    app.assistant.events.put(dict(type='error', request_id=previous, message='Late timeout'))
+    one_poll(app, monkeypatch)
+    assert app.assistant.busy
+    assert app.voice.spoken == []
+    assert all('old answer' not in message['text'] for message in app.assistant.messages)
+
+
+def test_barge_in_stops_reasoning_without_cancelling_the_new_recording(peter_ui, monkeypatch):
+    app, requests = peter_ui, []
+    app.assistant_model_selected = True
+    app.assistant.busy = True
+    before = getattr(app.voice, 'cancellations', 0)
+    app.voice.events.put(dict(type='voice_interrupt'))
+    one_poll(app, monkeypatch)
+    assert not app.assistant.busy
+    assert getattr(app.voice, 'cancellations', 0) == before
+    monkeypatch.setattr(app.assistant, 'send', lambda text: requests.append(text))
+    app.voice.events.put(dict(type='transcript', text='What is on my calendar?', interrupted=True))
+    one_poll(app, monkeypatch)
+    assert requests == ['What is on my calendar?']
+
+
+def test_spoken_stop_is_written_without_asking_model_another_question(peter_ui, monkeypatch):
+    app = peter_ui
+    app.assistant.busy = True
+    app.voice.events.put(dict(type='voice_interrupt'))
+    app.voice.events.put(dict(type='transcript', text='Peter, stop please.', interrupted=True))
+    monkeypatch.setattr(app.assistant, 'send', lambda _: pytest.fail('Stop must not start inference'))
+    one_poll(app, monkeypatch)
+    assert not app.assistant.busy
+    assert app.assistant.messages[-1]['role'] == 'user'
+    assert app.assistant.messages[-1]['text'] == 'Peter, stop please.'
+    assert app.voice.spoken == []
+
+
+def test_manual_microphone_can_interrupt_thinking(peter_ui):
+    app = peter_ui
+    app.assistant.busy = True
+    app.cfg['peter']['hands_free'] = False
+    app.toggle_peter_listen()
+    assert not app.assistant.busy
+    assert app.voice.listens == 1

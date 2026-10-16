@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -206,7 +207,8 @@ class Transaction:
         self.summaries.append(summary)
 
     def commit(self, request):
-        with LOCK:
+        # Keep the same request-lock -> storage-lock order as Stop and Undo.
+        with getattr(self.history, 'commit_guard', nullcontext()), LOCK:
             if self.vault.names() != self.original_names:
                 raise ConflictError("The vault changed while Assistant was working. Nothing was saved; try again.")
             for name, content in self.before.items():

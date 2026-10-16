@@ -15,6 +15,15 @@ from app.storage import Vault
 from library.chat import ChatClient
 
 
+@pytest.fixture(autouse=True)
+def mocked_http_transport(monkeypatch):
+    # These unit tests exercise budget/retry accounting with synthetic clocks.
+    # Real socket interruption is covered by test_chat_cancellation.py.
+    def request(method, url, *, cancel=None, deadline=None, **options):
+        return getattr(requests, method)(url, **options)
+    monkeypatch.setattr('library.chat.transport_request', request)
+
+
 class Clock:
     def __init__(self, value=100.0):
         self.value = value

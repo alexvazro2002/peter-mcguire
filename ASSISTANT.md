@@ -361,3 +361,25 @@ different note contents are preserved for normal read-and-merge planning. Repeat
 an already completed identical task-plus-note request is a no-op, and a saved pair
 can be undone together. Long note requirements are compacted only in model guidance;
 the complete user payload remains available to execution and completion checks.
+
+
+## Stopping Peter and speaking over him
+
+The Home and conversation views include a labelled **Stop Peter** button. It
+stops pending reasoning, queued speech and playback, and immediately lets you
+enter another request. In manual mode, **Interrupt & speak** stops the current
+request and opens the microphone. With **Hands-free** enabled, start speaking to
+interrupt Peter; the opening words remain in the captured request. Saying just
+“Peter, stop” stops him without asking the model another question.
+
+Cancellation uses a separate token for each request. A stopped request cannot
+resume when the next request starts, publish a late answer, or commit staged
+changes. A save that completed just before Stop remains recorded in chat and can
+be undone. Cancellable model connections run in a private HTTP worker so Stop
+also closes the inference socket, including during model discovery. Cold model
+startup observes the request token. Shared LM Studio models remain available.
+
+The narrow task-and-note route tolerates an accidental trailing double quote or
+quotation marks around the whole command. Balanced quotes inside titles and note
+content are preserved. Repeating an already saved cooking/Recipes request returns
+its existing result without adding duplicate tasks or ingredients.

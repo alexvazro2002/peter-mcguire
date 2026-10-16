@@ -1,5 +1,36 @@
 # Peter (McGuire) — verification record
 
+## 16 October: reliable repeat requests and interrupting Peter
+
+The complete final suite passes **1,080 tests in 47.66 seconds**.
+
+The cooking command succeeded at 07:12 UTC. Its repeat at 07:13 included an
+unmatched trailing double quote, which made the ingredient fast path decline it;
+both local model attempts then timed out. Command-boundary quotes are now handled
+conservatively. Exact quoted and repeated variants pass without model calls or
+duplicate tasks/notes. The original saved task and Recipes note were preserved.
+
+A labelled Stop Peter button cancels reasoning and voice; hands-free speech can
+interrupt an active reply and retain the user's opening words. Sustained audible
+speech is required, with a longer preroll and a stricter onset for interruptions.
+PCM-pipe tests cover playback process termination, complete utterance capture,
+quiet noise and click rejection, gate changes, and explicit Stop during capture.
+Microphone echo cancellation has not been added; these tests do not establish
+acoustic behaviour in every speaker/microphone arrangement.
+
+Each request has its own cancellation token and event identity. Stop rejects late
+answers and prevents staged writes from reaching commit. Stop and commit share a
+save boundary, so an already completed save remains truthfully recorded and
+undoable. Concurrent Stop/Undo tests check lock ordering. Cold model startup and
+private worker-owned HTTP connections also observe cancellation; real local HTTP
+tests verify prompt socket disconnection and a successful replacement request.
+
+The installed local model was exercised with temporary workspace data. Stop
+released the UI in under a millisecond; the quoted cooking request then completed
+in 0.011 seconds, saved one correctly scheduled task and formatted Recipes note,
+and its repeat used no model and added nothing. A fresh model question answered
+correctly afterwards. No live user task, note or calendar entry was created.
+
 ## 16 October: compound task wording and complete notes
 
 The final source passes **1,041 tests in 31.85 seconds** with the installed Python

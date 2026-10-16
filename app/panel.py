@@ -2,6 +2,7 @@
 import asyncio
 import json
 import queue
+import re
 import time
 import subprocess
 import sys
@@ -181,9 +182,9 @@ class Workspace:
     def toggle_peter_listen(self):
         if not self.cfg.get("peter", {}).get("enabled", True):
             self.notify("Peter voice is disabled in Settings.")
-        elif self.assistant.busy:
-            self.notify("Peter is finishing the current request.")
         else:
+            if self.assistant.busy:
+                self.cancel_peter()
             if self.cfg.get('peter', {}).get('hands_free', False):
                 self.set_peter_hands_free(False)
             self.voice.toggle_listen()
@@ -193,17 +194,27 @@ class Workspace:
         self.persist()
         self.voice.set_hands_free(enabled)
         self.voice.allow_hands_free(enabled and not self.assistant.busy)
+        self.voice.allow_interruptions(enabled and not self.closed)
         if self.home_view and self.view == 'home':
             self.home_view.refresh()
 
-    def cancel_peter(self):
+    def cancel_peter(self, *, stop_voice=True):
         self.release_pending_caption()
-        self.voice.cancel()
-        self.assistant.close()
-        self.peter_state = "thinking" if self.assistant.busy else "idle"
-        self.peter_status = "Cancelling current request…" if self.assistant.busy else "Ready when you are."
+        if stop_voice:
+            self.voice.cancel()
+        try:
+            stopped = self.assistant.interrupt()
+            if stopped and stopped.get('operation_id'):
+                self.assistant_data_changed()
+        except (OSError, ValueError) as error:
+            self.notify('Stopped, but could not save the interruption in chat: ' + str(error), True)
+        self.assistant_status = "Stopped"
+        self.peter_state, self.peter_status = "idle", "Stopped. Ready when you are."
         if self.home_view and self.view == "home":
             self.home_view.refresh()
+        if self.assistant_view and self.view == 'assistant':
+            self.assistant_view.refresh_messages()
+            self.assistant_view.refresh()
 
     def release_pending_caption(self):
         if self.pending_speech_id is not None:
@@ -618,7 +629,21 @@ class Workspace:
                 peter_changed = True
                 if event["type"] == "transcript":
                     if self.voice.valid_event(event):
-                        self.submit_peter(event["text"])
+                        text = event['text']
+                        stop_only = re.fullmatch(r"\s*(?:(?:hey\s+)?peter[,\s]+)?(?:stop|stop\s+(?:peter|talking|thinking)|cancel|never\s+mind|be\s+quiet|quiet)(?:[,\s]+(?:peter|please))?[.!?\s]*", text, re.I)
+                        if event.get('interrupted') and stop_only:
+                            try:
+                                self.assistant.append(dict(role='user', text=text))
+                            except (OSError, ValueError) as error:
+                                self.notify('Could not save the spoken interruption: ' + str(error), True)
+                            assistant_changed = True
+                        else:
+                            self.submit_peter(text)
+                elif event['type'] == 'voice_interrupt':
+                    if self.voice.valid_event(event):
+                        # Voice has already stopped playback and started capturing
+                        # the interruption. Cancelling it again would lose words.
+                        self.cancel_peter(stop_voice=False)
                 elif event['type'] == 'voice_caption':
                     if self.home_view:
                         self.home_view.speech_caption(event, update=self.view == 'home')
@@ -639,6 +664,8 @@ class Workspace:
                     event = self.assistant.events.get_nowait()
                 except queue.Empty:
                     break
+                if not self.assistant.valid_event(event):
+                    continue
                 assistant_changed = True
                 peter_changed = True
                 if event["type"] == "status":
@@ -754,6 +781,7 @@ class Workspace:
             if self.offer_next_email():
                 assistant_changed = peter_changed = True
             self.voice.allow_hands_free(not self.assistant.busy and not self.closed)
+            self.voice.allow_interruptions(not self.closed)
             try:
                 if self.view == "home" and datetime.now().replace(second=0, microsecond=0) != self.home_focus_minute:
                     home_changed = True

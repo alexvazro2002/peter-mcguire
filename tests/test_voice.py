@@ -545,3 +545,128 @@ def test_cancel_clears_an_utterance_enqueued_while_waiting_for_capture_lock(spee
     finally:
         cancellation.join(timeout=2)
         controller.close()
+
+
+def interrupt_capture(monkeypatch, captures, trigger):
+    """A paced PCM pipe exercises the same select/read path as the desk mic."""
+    import subprocess
+    import sys
+    from app.hands_free import UtteranceDetector
+
+    class Vad:
+        def is_speech(self, frame, rate): return frame != b'\0\0' * 480
+
+    monkeypatch.setattr('app.voice.UtteranceDetector',
+                        lambda **kwargs: UtteranceDetector(vad=Vad(), **kwargs))
+    script = '''import sys,time
+from pathlib import Path
+trigger=Path(TRIGGER)
+silence=b'\\0\\0'*480
+while True:
+ frames=[silence]
+ if trigger.exists():
+  kind=trigger.read_text();trigger.unlink()
+  if kind=='speech':frames=[b'\\xb0\\x04'*480]+[b'\\xd0\\x07'*480]*29+[silence]*35
+  elif kind=='noise':frames=[b'\\x01\\0'*480]*15+[silence]*35
+  elif kind=='click':frames=[b'\\xd0\\x07'*480]*3+[silence]*35
+ for frame in frames:
+  sys.stdout.buffer.write(frame);sys.stdout.flush();time.sleep(.03)
+'''.replace('TRIGGER', repr(str(trigger)))
+
+    def popen(argv, **kwargs):
+        if Path(argv[0]).name in {'pw-record', 'arecord'}:
+            process = subprocess.Popen([sys.executable, '-u', '-c', script], **kwargs)
+            captures.append(process)
+            return process
+        return subprocess.Popen(argv, **kwargs)
+    return popen
+
+
+def test_hands_free_interrupts_thinking_and_keeps_the_whole_replacement_request(speech_server, monkeypatch, tmp_path):
+    url, capture = speech_server
+    processes, trigger = [], tmp_path / 'interrupt'
+    controller = VoiceController({'voice_url': url, 'hands_free': True},
+        which=lambda name: '/usr/bin/' + name,
+        popen=interrupt_capture(monkeypatch, processes, trigger))
+    try:
+        old_cancel = controller._active_cancel
+        controller.allow_interruptions(True)  # Thinking gate, normal capture paused.
+        trigger.write_text('speech')
+        interruption = wait_event(controller, 'voice_interrupt')
+        assert controller.valid_event(interruption) and old_cancel.is_set()
+        # The UI releases reasoning without cancelling voice a second time.
+        controller.allow_interruptions(False)
+        controller.allow_hands_free(True)
+        transcript = wait_event(controller, 'transcript')
+        assert transcript['interrupted'] and controller.valid_event(transcript)
+        assert transcript['generation'] == interruption['generation']
+        assert transcript['text'] == 'Add a task for tomorrow.'
+        requests = [body for path, body, _ in capture['requests'] if path.endswith('transcriptions')]
+        assert len(requests) == 1
+        assert b'\xb0\x04' * 480 + b'\xd0\x07' * 480 * 29 in requests[0]
+        assert len(processes) == 1 and processes[0].poll() is None
+    finally:
+        controller.close()
+
+
+def test_hands_free_speech_interrupt_stops_playback_process(speech_server, monkeypatch, tmp_path):
+    import sys
+    url, capture = speech_server
+    processes, trigger, playback = [], tmp_path / 'interrupt', []
+    controller = VoiceController({'voice_url': url, 'hands_free': True},
+        which=lambda name: '/usr/bin/' + name,
+        popen=interrupt_capture(monkeypatch, processes, trigger))
+
+    def speak(session, text, cancelled, **kwargs):
+        controller._status('speaking', 'Speaking', cancelled)
+        controller._run_audio([sys.executable, '-c', 'import time;time.sleep(20)'],
+                              cancelled, limit=30, on_start=lambda: playback.append(controller._process))
+    controller._speak = speak
+    try:
+        controller.speak('A long answer.')
+        wait_event(controller, 'voice_status', 'speaking')
+        controller.allow_interruptions(True)
+        trigger.write_text('speech')
+        wait_event(controller, 'voice_interrupt')
+        assert playback and playback[0].poll() is not None
+        assert wait_event(controller, 'transcript')['interrupted']
+        assert not any(path.endswith('speech') for path, _, _ in capture['requests'])
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize('kind', ['noise', 'click'])
+def test_quiet_noise_and_brief_clicks_do_not_interrupt(speech_server, monkeypatch, tmp_path, kind):
+    url, capture = speech_server
+    trigger = tmp_path / 'interrupt'
+    controller = VoiceController({'voice_url': url, 'hands_free': True},
+        which=lambda name: '/usr/bin/' + name,
+        popen=interrupt_capture(monkeypatch, [], trigger))
+    try:
+        controller.allow_interruptions(True)
+        trigger.write_text(kind)
+        time.sleep(1.65)
+        assert controller._generation == 0 and not controller._awaiting_transcript
+        assert capture['requests'] == []
+        assert not any(event['type'] == 'voice_interrupt' for event in list(controller.events.queue))
+    finally:
+        controller.close()
+
+
+def test_explicit_stop_discards_the_interruption_still_being_spoken(speech_server, monkeypatch, tmp_path):
+    url, capture = speech_server
+    trigger = tmp_path / 'interrupt'
+    controller = VoiceController({'voice_url': url, 'hands_free': True},
+        which=lambda name: '/usr/bin/' + name,
+        popen=interrupt_capture(monkeypatch, [], trigger))
+    try:
+        controller.allow_interruptions(True)
+        trigger.write_text('speech')
+        interruption = wait_event(controller, 'voice_interrupt')
+        controller.cancel()
+        assert not controller.valid_event(interruption)
+        time.sleep(1.85)
+        assert capture['requests'] == [] and not controller._awaiting_transcript
+        assert not any(event['type'] == 'transcript' for event in list(controller.events.queue))
+    finally:
+        controller.close()

@@ -20,8 +20,8 @@ class AssistantView:
                            expand=True, max_length=8000, disabled=app.assistant.busy)
         self.send_button = ft.IconButton(ft.Icons.ARROW_UPWARD_ROUNDED, tooltip="Send message", bgcolor=c["accent"],
                                          icon_color=c["accent_text"], on_click=self.send, disabled=app.assistant.busy)
-        self.cancel_button = ft.IconButton(ft.Icons.STOP_CIRCLE_OUTLINED, tooltip="Cancel pending request", icon_color=c["muted"],
-                                           on_click=self.cancel, visible=app.assistant.busy)
+        self.cancel_button = button("Stop Peter", self.cancel, c, ft.Icons.STOP_CIRCLE_OUTLINED)
+        self.cancel_button.visible = app.assistant.busy or getattr(app.voice, 'active', False)
         actions = [ft.IconButton(ft.Icons.MEMORY_OUTLINED, tooltip="Choose AI model", icon_color=c["muted"],
                                  disabled=app.assistant.busy, on_click=lambda e: choose_model(app, "Peter", lambda: None)),
                    ft.IconButton(ft.Icons.HISTORY, tooltip="Peter's change history", icon_color=c["muted"], on_click=self.history),
@@ -51,7 +51,6 @@ class AssistantView:
 
     def cancel(self, _):
         self.app.cancel_peter()
-        self.app.assistant_status = "Cancelling; waiting for the current model response"
         self.refresh()
 
     def source(self, source):
@@ -182,6 +181,7 @@ class AssistantView:
 
     def refresh(self):
         busy = self.app.assistant.busy
-        self.progress.visible, self.input.disabled, self.send_button.disabled, self.cancel_button.visible = busy, busy, busy, busy
+        self.progress.visible, self.input.disabled, self.send_button.disabled = busy, busy, busy
+        self.cancel_button.visible = busy or getattr(self.app.voice, 'active', False)
         self.status.value = self.app.assistant_status
         self.content.update()

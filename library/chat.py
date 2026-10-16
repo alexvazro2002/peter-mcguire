@@ -5,6 +5,7 @@ import time
 
 from library.server import validate_url
 from library.auth import check_auth, request_options
+from library.chat_transport import request as transport_request
 
 ASSISTANT_REPLY_SCHEMA = {
     "oneOf": [
@@ -25,7 +26,6 @@ class ChatClient:
         self.last_timings = {}
 
     def complete(self, messages, *, structured=False, max_tokens=None, response_schema=None, deadline=None, cancel=None):
-        import requests
         started = time.monotonic()
         requests_used = 0
         def remaining_budget():
@@ -51,7 +51,7 @@ class ChatClient:
         elif self.settings.get("runtime_provider") == "lmstudio":
             # Library workers share the server in another process; resolve its exact alias too.
             from library.models import model_matches
-            models = requests.get(self.settings["server_url"].rstrip("/") + "/models", timeout=min(5, remaining_budget()), allow_redirects=False, **request_options(self.settings))
+            models = transport_request('get', self.settings["server_url"].rstrip("/") + "/models", timeout=min(5, remaining_budget()), allow_redirects=False, cancel=cancel, deadline=deadline, **request_options(self.settings))
             check_auth(models)
             models.raise_for_status()
             identifiers = [item.get("id", "") for item in models.json().get("data", [])]
@@ -75,7 +75,7 @@ class ChatClient:
             nonlocal requests_used
             remaining = remaining_budget()
             requests_used += 1
-            return requests.post(url, json=payload, timeout=(min(5, remaining), min(30, remaining) if deadline is not None else 240), allow_redirects=False, **request_options(self.settings))
+            return transport_request('post', url, json=payload, timeout=(min(5, remaining), min(30, remaining) if deadline is not None else 240), allow_redirects=False, cancel=cancel, deadline=deadline, **request_options(self.settings))
 
         def rejection(response):
             if getattr(response, "status_code", 200) not in {400, 422}:
@@ -127,4 +127,5 @@ class ChatClient:
         content = re.sub(r"<think>.*?</think>", "", message.get("content") or "", flags=re.S).strip()
         if not content and not message.get("tool_calls"):
             raise ValueError("Model returned no final answer. Increase the output token budget in Settings.")
+        remaining_budget()
         return dict(message, content=content, finish_reason=choice.get("finish_reason"))

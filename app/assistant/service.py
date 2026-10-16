@@ -20,6 +20,8 @@ from app.assistant.progress import acknowledgement
 from app.assistant.email_tasks import respond as email_task
 from app.assistant.inference import DeadlineClient
 from app.assistant.simple_creation import respond as simple_creation
+from app.assistant.cancellation import RequestHistory
+from library.runtime import ModelRuntime
 
 
 class AssistantService:
@@ -35,6 +37,8 @@ class AssistantService:
         self.history = History(vault, calendar, vault.root / ".history" / "assistant", memory=self.memory)
         self.events, self.cancel, self.lock = queue.Queue(), threading.Event(), threading.RLock()
         self.busy, self.messages, self.warning, self.storage_error = False, [], "", ""
+        self._request_id, self._request_history = 0, None
+        self._worker_lock = threading.Lock()
         if self.path.exists():
             try:
                 data = json.loads(self.path.read_text(encoding="utf-8"))
@@ -75,31 +79,43 @@ class AssistantService:
                 raise ValueError("Enter a message between 1 and 8,000 characters.")
             conversation = list(self.messages)
             self.append(dict(role="user", text=request))
-            self.cancel.clear()
+            self.cancel = cancel = threading.Event()
+            self._request_id += 1
+            request_id = self._request_id
+            history = self._request_history = RequestHistory(self.history, cancel, self.lock)
             self.busy = True
 
-        progress_lock, finished = threading.Lock(), threading.Event()
-        acknowledged = False
+        progress_lock, finished = threading.RLock(), threading.Event()
+        acknowledged, released = False, False
 
-        def emit(**event):
-            if event.get('type') in {'answer', 'error'}:
-                with progress_lock:
-                    finished.set()
+        def release_fallback():
+            nonlocal released
+            if not released:
+                released = True
                 release = getattr(self.tool_fallback, 'release', None)
                 if release:
                     release()
-            with progress_lock:
-                self.events.put(event)
+
+        def emit(**event):
+            if event.get('type') in {'answer', 'error'}:
+                finished.set()
+                release_fallback()
+            with self.lock, progress_lock:
+                if request_id != self._request_id:
+                    return
+                if event.get('type') in {'answer', 'error'}:
+                    finished.set()
+                self.events.put(dict(event, request_id=request_id))
 
         def acknowledge(text="I'm working through that now.", *, again=False):
             nonlocal acknowledged
-            with progress_lock:
-                if finished.is_set() or self.cancel.is_set() or acknowledged and not again:
+            with self.lock, progress_lock:
+                if finished.is_set() or cancel.is_set() or acknowledged and not again:
                     return
                 acknowledged = True
-                self.events.put(dict(type='acknowledgement', text=text))
+                emit(type='acknowledgement', text=text)
 
-        def work():
+        def run():
             started = time.monotonic()
             delayed = threading.Timer(7.0, acknowledge)
             delayed.daemon = True
@@ -108,68 +124,80 @@ class AssistantService:
                 acknowledge(initial)
             delayed.start()
             try:
-                direct = simple_creation(request, self.vault, self.calendar, self.history, self.cancel, self.zone)
+                if cancel.is_set():
+                    return
+                direct = simple_creation(request, self.vault, self.calendar, history, cancel, self.zone)
                 if direct is not None:
                     emit(type='answer', **direct)
                     return
-                request_runtime = SimpleNamespace(ensure=getattr(self.runtime, 'ensure', lambda: None), settings=getattr(self.runtime, 'settings', {}),
-                    client=DeadlineClient(getattr(self.runtime, 'client', None), self.cancel))
-                direct = email_task(request, conversation, self.vault, self.calendar, self.history, self.cancel, self.zone)
+                def ensure_runtime():
+                    if cancel.is_set():
+                        raise ValueError('Request cancelled.')
+                    if isinstance(self.runtime, ModelRuntime):
+                        self.runtime.ensure(cancel=cancel)
+                    else:
+                        getattr(self.runtime, 'ensure', lambda: None)()
+
+                request_runtime = SimpleNamespace(ensure=ensure_runtime, settings=getattr(self.runtime, 'settings', {}),
+                    client=DeadlineClient(getattr(self.runtime, 'client', None), cancel))
+                direct = email_task(request, conversation, self.vault, self.calendar, history, cancel, self.zone)
                 if direct is not None:
                     emit(type='answer', **direct)
                     return
-                direct = workspace_action(request, conversation, self.vault, self.calendar, self.history, self.cancel)
+                direct = workspace_action(request, conversation, self.vault, self.calendar, history, cancel)
                 if direct is not None:
                     emit(type='answer', **direct)
                     return
                 if self.mail_flow is not None and link_request(request):
-                    linked = self.mail_flow.respond(request, conversation, self.cancel, emit, runtime=request_runtime)
+                    linked = self.mail_flow.respond(request, conversation, cancel, emit, runtime=request_runtime)
                     if linked is not None:
                         emit(type='answer', **linked)
                         return
-                opened = self.opening.respond(request, conversation, self.external, self.cancel)
+                opened = self.opening.respond(request, conversation, self.external, cancel)
                 if opened is not None:
                     emit(type="answer", **opened)
                     return
-                briefing = self.briefing.respond(request, cancel=self.cancel)
+                briefing = self.briefing.respond(request, cancel=cancel)
                 if briefing is not None:
                     emit(type="answer", **briefing)
                     return
                 if self.email_briefing is not None:
-                    email = self.email_briefing.respond(request, cancel=self.cancel)
+                    email = self.email_briefing.respond(request, cancel=cancel)
                     if email is not None:
                         emit(type="answer", **email)
                         return
                 if self.mail_flow is not None:
-                    email = self.mail_flow.respond(request, conversation, self.cancel, emit, runtime=request_runtime)
+                    email = self.mail_flow.respond(request, conversation, cancel, emit, runtime=request_runtime)
                     if email is not None:
                         emit(type='answer', **email)
                         return
-                quick = self.external.quick_answer(request, self.zone, cancel=self.cancel, conversation=conversation) if self.external is not None else None
+                quick = self.external.quick_answer(request, self.zone, cancel=cancel, conversation=conversation) if self.external is not None else None
                 if quick is not None:
                     emit(type="answer", **quick)
                     return
                 emit(type="status", message="Connecting to your local model")
-                self.runtime.ensure()
+                ensure_runtime()
+                if cancel.is_set():
+                    return
                 if social_request(request):
                     social = social_answer(request, conversation, request_runtime.client)
                     if social is not None:
                         emit(type='answer', **social)
                         return
-                engine = Engine(self.vault, self.calendar, self.history, request_runtime.client,
+                engine = Engine(self.vault, self.calendar, history, request_runtime.client,
                                 self.runtime.settings, self.zone, external=self.external)
                 try:
-                    result = engine.run(request, conversation, emit, self.cancel)
+                    result = engine.run(request, conversation, emit, cancel)
                 except ModelToolError:
-                    if self.cancel.is_set():
+                    if cancel.is_set():
                         raise ValueError('Request cancelled. Nothing was saved.')
                     acknowledge("This needs another approach. I'm trying the other local model.", again=True)
                     emit(type='status', message='Retrying with another installed local model')
-                    fallback = self.tool_fallback.ensure(self.cancel)
-                    engine = Engine(self.vault, self.calendar, self.history, DeadlineClient(fallback.client, self.cancel),
+                    fallback = self.tool_fallback.ensure(cancel)
+                    engine = Engine(self.vault, self.calendar, history, DeadlineClient(fallback.client, cancel),
                                     fallback.settings, self.zone, external=self.external)
                     try:
-                        result = engine.run(request, conversation, emit, self.cancel)
+                        result = engine.run(request, conversation, emit, cancel)
                     except ModelToolError as error:
                         raise ValueError('Both local models could not complete the action. Nothing was saved. ' + str(error)) from error
                     result.setdefault('evidence', {})['model_fallback'] = self.tool_fallback.title
@@ -180,7 +208,34 @@ class AssistantService:
             finally:
                 finished.set()
                 delayed.cancel()
+                release_fallback()
+
+        def work():
+            # A new turn can be entered immediately after Stop. Let the old
+            # worker close its transport before touching shared mail/model state.
+            with self._worker_lock:
+                if not cancel.is_set():
+                    run()
         threading.Thread(target=work, daemon=True).start()
+
+    def valid_event(self, event):
+        return event.get('request_id', self._request_id) == self._request_id
+
+    def interrupt(self):
+        """Stop the current turn and immediately accept a replacement request."""
+        with self.lock:
+            self.cancel.set()
+            if not self.busy:
+                return None
+            self._request_id += 1
+            self.busy = False
+            saved = self._request_history.saved if self._request_history else None
+            message = dict(role='assistant', text='Stopped at your request.', interrupted=True)
+            if saved:
+                message.update(saved)
+                message['text'] = 'Stopped. These changes had already been saved: ' + ' '.join(saved['changes'])
+            self.append(message)
+            return message
 
     def undo(self, operation_id):
         with self.lock:

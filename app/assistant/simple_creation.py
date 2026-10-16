@@ -8,8 +8,25 @@ from app.assistant.transactions import Transaction
 from app.integrations import request_text
 
 
+def _command_text(request):
+    """Remove copy/paste quotation marks at the command boundary only.
+
+    Balanced quotes within the command may delimit a task title or note text.
+    Keep those intact rather than stripping punctuation from the payload.
+    """
+    text = request.strip()
+    pairs = {'"': '"', '“': '”', "'": "'", '‘': '’'}
+    if len(text) > 1 and text[:1] in pairs and text[-1:] == pairs[text[0]]:
+        text = text[1:-1].strip()
+    elif text.endswith('"') and text.count('"') % 2:
+        text = text[:-1].rstrip()
+    elif text.endswith('”') and text.count('”') == text.count('“') + 1:
+        text = text[:-1].rstrip()
+    return request_text(re.sub(r'^\s*(?:and|also|then)\s+', '', text, flags=re.I))
+
+
 def respond(request, vault, calendar, history, cancel, zone='Europe/London', now=None):
-    text = request_text(re.sub(r'^\s*(?:and|also|then)\s+', '', request, flags=re.I))
+    text = _command_text(request)
     parts = re.split(_NOTE_CLAUSE,text,maxsplit=1,flags=re.I)
     if len(parts)!=2:
         return None
